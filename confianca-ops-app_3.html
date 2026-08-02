@@ -30,11 +30,11 @@
 // ---------------------------------------------------------------------------
 // Configuração da API
 // ---------------------------------------------------------------------------
-// Aponta para "uvicorn app.main:app --port 8000" (veja backend/README.md).
-// Para apontar para outro host/porta sem editar este arquivo, defina
-// `window.CONFIANCA_API_BASE_URL` num <script> antes deste, ou troque a
-// constante abaixo direto.
-const API_BASE_URL = (window.CONFIANCA_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+// Aponta para o backend em produção (Render). Para apontar para outro
+// host/porta sem editar este arquivo (ex.: localhost em desenvolvimento),
+// defina `window.CONFIANCA_API_BASE_URL` num <script> antes deste, ou
+// troque a constante abaixo direto.
+const API_BASE_URL = (window.CONFIANCA_API_BASE_URL || "https://confianca-an29.onrender.com").replace(/\/$/, "");
 
 // ---------------------------------------------------------------------------
 // Constantes de domínio
