@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Confiança Depósito e Armazenamento — Painel de Operações</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap');
+  body { font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; }
+  .font-data { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+</style>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900">
+<div id="app"></div>
+
+<script>
+/* ============================================================================
+   CONFIANÇA DEPÓSITO E ARMAZENAMENTO — Painel de Operações
+   ----------------------------------------------------------------------------
+   Frontend HTML autocontido (sem build) que fala com o backend FastAPI em
+   backend/ via fetch(). Os dados vivem no banco do backend — este arquivo só
+   mantém uma cópia local (state.servicos) para renderizar a tela, recarregada
+   a cada operação (criar/editar/baixa). Se a API cair, a tela mostra um aviso
+   com opção de tentar novamente (veja carregarServicos/viewErro).
+   ============================================================================ */
+
+// ---------------------------------------------------------------------------
+// Configuração da API
+// ---------------------------------------------------------------------------
+// Aponta para "uvicorn app.main:app --port 8000" (veja backend/README.md).
+// Para apontar para outro host/porta sem editar este arquivo, defina
+// `window.CONFIANCA_API_BASE_URL` num <script> antes deste, ou troque a
+// constante abaixo direto.
+const API_BASE_URL = (window.CONFIANCA_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+
+// ---------------------------------------------------------------------------
+// Constantes de domínio
+// ---------------------------------------------------------------------------
+// Os valores em português (usados em toda a UI/filtros) são só de exibição —
+// o backend guarda o status em códigos (AGENDADO/EM_ANDAMENTO/CONCLUIDO/
+// CANCELADO); a conversão fica isolada em statusParaApi/statusDoApi.
+const STATUS = { AGENDADO: "Agendado", EM_ANDAMENTO: "Em Andamento", CONCLUIDO: "Concluído", CANCELADO: "Cancelado" };
+const STATUS_CODIGO_API = {
+  [STATUS.AGENDADO]: "AGENDADO",
+  [STATUS.EM_ANDAMENTO]: "EM_ANDAMENTO",
+  [STATUS.CONCLUIDO]: "CONCLUIDO",
+  [STATUS.CANCELADO]: "CANCELADO",
+};
+const STATUS_DA_API = {
+  AGENDADO: STATUS.AGENDADO,
+  EM_ANDAMENTO: STATUS.EM_ANDAMENTO,
+  CONCLUIDO: STATUS.CONCLUIDO,
+  CANCELADO: STATUS.CANCELADO,
+};
+const statusParaApi = (status) => STATUS_CODIGO_API[status] || "AGENDADO";
+const statusDaApi = (codigo) => STATUS_DA_API[codigo] || STATUS.AGENDADO;
+
+const STATUS_STYLE = {
+  [STATUS.AGENDADO]:     { badge: "bg-slate-100 text-slate-700 border-slate-300",  emoji: "🗓️" },
+  [STATUS.EM_ANDAMENTO]: { badge: "bg-amber-100 text-amber-800 border-amber-300",  emoji: "🚚" },
+  [STATUS.CONCLUIDO]:    { badge: "bg-emerald-100 text-emerald-800 border-emerald-300", emoji: "✅" },
+  [STATUS.CANCELADO]:    { badge: "bg-rose-100 text-rose-700 border-rose-300",     emoji: "✖️" },
+};
+
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+// ---------------------------------------------------------------------------
+// Estado da aplicação
+// ---------------------------------------------------------------------------
+const state = {
+  servicos: [],
+  carregando: true,
+  erroCarregamento: null,
+  view: "dashboard",
+  editingId: null,
+  baixaId: null,
+  busca: "",
+  filtroStatus: "Todos",
+  filtroPeriodo: "Todos",
+  somenteQuintoAndar: false,
+  mesRelatorio: todayISO().slice(0, 7),
+  // Relatório Geral
+  mesGeral: todayISO().slice(0, 7),
+  todosPeriodosGeral: false,
+  tipoGeral: "Todos",
+  statusGeral: "Todos",
+};
+
+// ---------------------------------------------------------------------------
+// Cliente da API — fetch + mapeamento de campos (snake_case do backend
+// <-> camelCase usado no resto deste arquivo).
+// ---------------------------------------------------------------------------
+async function apiFetch(caminho, opcoes = {}) {
+  let resposta;
+  try {
+    resposta = await fetch(`${API_BASE_URL}${caminho}`, {
+      method: opcoes.method || "GET",
+      headers: opcoes.body ? { "Content-Type": "application/json" } : undefined,
+      body: opcoes.body ? JSON.stringify(opcoes.body) : undefined,
+    });
+  } catch {
+    throw new Error("Não foi possível conectar ao servidor. Verifique se o backend está rodando.");
+  }
+  if (!resposta.ok) {
+    let mensagem = `Erro ${resposta.status} ao falar com o servidor`;
+    try {
+      const erro = await resposta.json();
+      if (typeof erro.detail === "string") mensagem = erro.detail;
+      else if (Array.isArray(erro.detail)) mensagem = erro.detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
+    } catch {}
+    throw new Error(mensagem);
+  }
+  if (resposta.status === 204) return null;
+  return resposta.json();
+}
+
+function mapServicoDaApi(s) {
+  return {
+    id: s.id,
+    clienteNome: s.nome_cliente,
+    isQuintoAndar: s.e_quinto_andar,
+    numeroContrato: s.numero_contrato || "",
+    data: s.data,
+    horario: s.horario,
+    endereco: s.endereco,
+    valorCobrado: Number(s.valor_cobrado) || 0,
+    custoOperacional: Number(s.custo_operacional) || 0,
+    qtdAjudantes: s.quantidade_ajudantes,
+    qtdViagens: s.viagens_caminhao,
+    efetivos: s.efetivos_nomes || "",
+    custosAdicionais: (s.custos_adicionais || []).map((c) => ({ id: uid(), descricao: c.descricao || "", valor: Number(c.valor) || 0 })),
+    status: statusDaApi(s.status),
+    obs: s.observacoes || "",
+    dataFinalizacao: s.data_finalizacao,
+    criadoEm: (s.created_at || "").slice(0, 10),
+  };
+}
+
+function mapCustosParaApi(custos) {
+  return (custos || []).map((c) => ({ descricao: (c.descricao || "").trim(), valor: Number(c.valor) || 0 }));
+}
+
+function mapServicoParaApiCreate(dados) {
+  return {
+    nome_cliente: dados.clienteNome,
+    e_quinto_andar: dados.isQuintoAndar,
+    numero_contrato: dados.numeroContrato || "",
+    data: dados.data,
+    horario: dados.horario,
+    endereco: dados.endereco,
+    valor_cobrado: dados.valorCobrado,
+    custo_operacional: dados.custoOperacional,
+    custos_adicionais: mapCustosParaApi(dados.custosAdicionais),
+    quantidade_ajudantes: dados.qtdAjudantes,
+    viagens_caminhao: dados.qtdViagens,
+    observacoes: dados.obs || "",
+  };
+}
+
+function mapServicoParaApiUpdate(dados) {
+  return {
+    nome_cliente: dados.clienteNome,
+    e_quinto_andar: dados.isQuintoAndar,
+    numero_contrato: dados.numeroContrato || "",
+    data: dados.data,
+    horario: dados.horario,
+    endereco: dados.endereco,
+    valor_cobrado: dados.valorCobrado,
+    custo_operacional: dados.custoOperacional,
+    custos_adicionais: mapCustosParaApi(dados.custosAdicionais),
+    quantidade_ajudantes: dados.qtdAjudantes,
+    viagens_caminhao: dados.qtdViagens,
+    efetivos_nomes: dados.efetivos,
+    status: dados.status ? statusParaApi(dados.status) : undefined,
+    observacoes: dados.obs,
+  };
+}
+
+async function carregarServicos() {
+  state.carregando = true;
+  state.erroCarregamento = null;
+  try {
+    const dados = await apiFetch("/api/servicos?limit=1000");
+    state.servicos = dados.map(mapServicoDaApi);
+  } catch (e) {
+    state.erroCarregamento = e.message || "Não foi possível carregar os atendimentos.";
+  } finally {
+    state.carregando = false;
+  }
+}
+
+async function recarregar() {
+  await carregarServicos();
+  render();
+}
+
+async function baixarArquivo(url, nomeArquivo) {
+  let resposta;
+  try {
+    resposta = await fetch(url);
+  } catch {
+    showToast("Não foi possível conectar ao servidor.");
+    return;
+  }
+  if (!resposta.ok) {
+    let mensagem = "Não foi possível gerar o relatório";
+    try {
+      const erro = await resposta.json();
+      if (erro.detail) mensagem = erro.detail;
+    } catch {}
+    showToast(mensagem);
+    return;
+  }
+  const blob = await resposta.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl; a.download = nomeArquivo; a.click();
+  URL.revokeObjectURL(objectUrl);
+  showToast("Relatório exportado");
+}
+
+// Custos adicionais são editados como listas transitórias (fora do state
+// principal) enquanto o formulário está aberto — só entram em state.servicos
+// quando o atendimento é salvo. Um conjunto para Novo/Editar, outro para Baixa.
+let formCustos = [];
+let baixaCustos = [];
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+const brl = (n) => (Number(n) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const dataBR = (iso) => { if (!iso) return "—"; const [y, m, d] = iso.split("-"); return `${d}/${m}/${y}`; };
+const totalCustosAdicionais = (s) => (s.custosAdicionais || []).reduce((acc, c) => acc + (Number(c.valor) || 0), 0);
+const custoTotal = (s) => (Number(s.custoOperacional) || 0) + totalCustosAdicionais(s);
+const lucro = (s) => (Number(s.valorCobrado) || 0) - custoTotal(s);
+const esc = (str) => String(str ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+function buildWhatsAppMessage(s) {
+  // A pedido: a mensagem de campo contém APENAS endereço, data e horário —
+  // nada de cliente, contrato, valores, ajudantes ou observações.
+  const linhas = [
+    "📦 *NOVA ORDEM DE SERVIÇO*",
+    "_Confiança Depósito e Armazenamento_",
+    "",
+    `📅 *Data:* ${dataBR(s.data)}`,
+    `🕐 *Horário:* ${s.horario}`,
+    `📍 *Endereço:* ${s.endereco}`,
+    "",
+    "Confirmar recebimento ✅",
+  ];
+  return linhas.join("\n");
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select(); document.execCommand("copy");
+      document.body.removeChild(ta); return true;
+    } catch { return false; }
+  }
+}
+
+function showToast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.remove("opacity-0", "pointer-events-none");
+  clearTimeout(window.__toastTimer);
+  window.__toastTimer = setTimeout(() => el.classList.add("opacity-0", "pointer-events-none"), 2200);
+}
+
+// ---------------------------------------------------------------------------
+// Seletores derivados
+// ---------------------------------------------------------------------------
+function computeStats() {
+  const hoje = todayISO();
+  const em7 = new Date(); em7.setDate(em7.getDate() + 7);
+  const limite = em7.toISOString().slice(0, 10);
+  const doDia = state.servicos.filter((s) => s.data === hoje && s.status !== STATUS.CANCELADO).length;
+  const proximos7 = state.servicos.filter((s) => s.data >= hoje && s.data <= limite && s.status !== STATUS.CANCELADO).length;
+  const pendentes = state.servicos.filter((s) => s.status === STATUS.AGENDADO || s.status === STATUS.EM_ANDAMENTO).length;
+  const mesAtual = hoje.slice(0, 7);
+  const lucroMes = state.servicos.filter((s) => s.status === STATUS.CONCLUIDO && s.data.slice(0, 7) === mesAtual).reduce((a, s) => a + lucro(s), 0);
+  return { doDia, proximos7, pendentes, lucroMes };
+}
+
+function listaFiltrada() {
+  const hoje = todayISO();
+  const em7 = new Date(); em7.setDate(em7.getDate() + 7);
+  const limite = em7.toISOString().slice(0, 10);
+  return state.servicos.filter((s) => {
+    if (state.filtroStatus !== "Todos" && s.status !== state.filtroStatus) return false;
+    if (state.somenteQuintoAndar && !s.isQuintoAndar) return false;
+    if (state.filtroPeriodo === "Hoje" && s.data !== hoje) return false;
+    if (state.filtroPeriodo === "Próximos 7 dias" && !(s.data >= hoje && s.data <= limite)) return false;
+    if (state.busca.trim()) {
+      const q = state.busca.trim().toLowerCase();
+      if (!s.clienteNome.toLowerCase().includes(q) && !s.endereco.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  }).sort((a, b) => (a.data + a.horario).localeCompare(b.data + b.horario));
+}
+
+function pendentesBaixa() {
+  return state.servicos.filter((s) => s.status === STATUS.AGENDADO || s.status === STATUS.EM_ANDAMENTO)
+    .sort((a, b) => (a.data + a.horario).localeCompare(b.data + b.horario));
+}
+
+// ---------------------------------------------------------------------------
+// Ações (expostas em window para os atributos onclick/onchange do HTML)
+// ---------------------------------------------------------------------------
+function setView(v) { state.view = v; state.editingId = null; state.baixaId = null; render(); }
+
+function abrirWhatsApp(id) {
+  const s = state.servicos.find((x) => x.id === id);
+  if (s) window.open(`https://wa.me/?text=${encodeURIComponent(buildWhatsAppMessage(s))}`, "_blank");
+}
+
+function editarServico(id) { state.editingId = id; state.view = "novo"; render(); }
+function baixarServico(id) { state.baixaId = id; state.view = "baixa"; render(); }
+function selecionarBaixa(id) { state.baixaId = id; render(); }
+
+function selecionarTipoServico(tipo) {
+  document.getElementById("f-tipo").value = tipo;
+
+  const btnQA = document.getElementById("btn-tipo-qa");
+  const btnPart = document.getElementById("btn-tipo-particular");
+  const ativo = "border-blue-600 bg-blue-600 text-white";
+  const ativoPart = "border-slate-900 bg-slate-900 text-white";
+  const inativo = "border-slate-300 bg-white text-slate-600 hover:bg-slate-50";
+
+  btnQA.className = `flex-1 rounded-lg border px-4 py-2.5 text-sm font-semibold transition ${tipo === "quintoandar" ? ativo : inativo}`;
+  btnPart.className = `flex-1 rounded-lg border px-4 py-2.5 text-sm font-semibold transition ${tipo === "particular" ? ativoPart : inativo}`;
+
+  document.getElementById("wrap-f-contrato").classList.toggle("hidden", tipo !== "quintoandar");
+  document.getElementById("wrap-f-cliente").classList.toggle("hidden", tipo !== "particular");
+}
+
+async function salvarServico(isEdit) {
+  const val = (id) => document.getElementById(id).value;
+  const tipo = val("f-tipo");
+  if (!tipo) { showToast("Selecione o tipo de serviço (QuintoAndar ou Particular)"); return; }
+
+  const isQuintoAndar = tipo === "quintoandar";
+  const dados = {
+    isQuintoAndar,
+    clienteNome: isQuintoAndar ? "QuintoAndar" : val("f-cliente").trim(),
+    numeroContrato: isQuintoAndar ? val("f-contrato").trim() : "",
+    data: val("f-data"),
+    horario: val("f-horario"),
+    endereco: val("f-endereco").trim(),
+    valorCobrado: Number(val("f-valor")) || 0,
+    custoOperacional: Number(val("f-custo")) || 0,
+    qtdAjudantes: Number(val("f-ajudantes")) || 0,
+    qtdViagens: Number(val("f-viagens")) || 0,
+    obs: val("f-obs").trim(),
+    custosAdicionais: formCustos
+      .filter((c) => (c.descricao || "").trim() || Number(c.valor) > 0)
+      .map((c) => ({ id: c.id, descricao: (c.descricao || "").trim(), valor: Number(c.valor) || 0 })),
+  };
+  if (isQuintoAndar && !dados.numeroContrato) { showToast("Informe o nº do contrato QuintoAndar"); return; }
+  if (!isQuintoAndar && !dados.clienteNome) { showToast("Informe o nome do cliente"); return; }
+  if (!dados.endereco || !dados.data || !dados.horario) {
+    showToast("Preencha endereço, data e horário"); return;
+  }
+
+  try {
+    if (isEdit) {
+      const statusEl = document.getElementById("f-status");
+      const servicoAtual = state.servicos.find((s) => s.id === state.editingId);
+      dados.status = statusEl ? statusEl.value : servicoAtual.status;
+      await apiFetch(`/api/servicos/${state.editingId}`, { method: "PATCH", body: mapServicoParaApiUpdate(dados) });
+      showToast("Atendimento atualizado");
+    } else {
+      await apiFetch("/api/servicos", { method: "POST", body: mapServicoParaApiCreate(dados) });
+      showToast("Atendimento cadastrado");
+    }
+    await carregarServicos();
+    state.editingId = null; state.view = "dashboard"; render();
+  } catch (e) {
+    showToast(e.message || "Erro ao salvar atendimento");
+  }
+}
+
+function enviarWhatsAppDoForm() {
+  const val = (id) => document.getElementById(id).value;
+  // A mensagem de campo só usa data, horário e endereço — não precisa de
+  // mais nada do formulário, mesmo que o cadastro tenha outros dados.
+  const tmp = { data: val("f-data"), horario: val("f-horario"), endereco: val("f-endereco") };
+  if (!tmp.endereco || !tmp.data || !tmp.horario) { showToast("Preencha data, horário e endereço"); return; }
+  window.open(`https://wa.me/?text=${encodeURIComponent(buildWhatsAppMessage(tmp))}`, "_blank");
+}
+
+async function copiarMensagemDoForm() {
+  const val = (id) => document.getElementById(id).value;
+  const tmp = { data: val("f-data"), horario: val("f-horario"), endereco: val("f-endereco") };
+  if (!tmp.endereco || !tmp.data || !tmp.horario) { showToast("Preencha data, horário e endereço"); return; }
+  const ok = await copyText(buildWhatsAppMessage(tmp));
+  showToast(ok ? "Mensagem copiada" : "Não foi possível copiar");
+}
+
+async function salvarBaixa() {
+  const s = state.servicos.find((x) => x.id === state.baixaId);
+  const val = (id) => document.getElementById(id).value;
+  const payload = {
+    status: statusParaApi(val("b-status")),
+    efetivos_nomes: val("b-efetivos").trim(),
+    quantidade_ajudantes: Number(val("b-ajudantes")) || 0,
+    viagens_caminhao: Number(val("b-viagens")) || 0,
+    custo_operacional: Number(val("b-custo")) || 0,
+    custos_adicionais: mapCustosParaApi(baixaCustos.filter((c) => (c.descricao || "").trim() || Number(c.valor) > 0)),
+    observacoes: [s.obs, val("b-obs").trim()].filter(Boolean).join(" | "),
+  };
+  try {
+    await apiFetch(`/api/servicos/${s.id}`, { method: "PATCH", body: payload });
+    state.baixaId = null;
+    showToast("Baixa registrada");
+    await carregarServicos();
+    render();
+  } catch (e) {
+    showToast(e.message || "Erro ao registrar baixa");
+  }
+}
+
+function exportarBackup() {
+  // Exporta uma cópia local (JSON) do que está carregado agora — os dados
+  // reais continuam persistidos no backend, isto é só uma conferência manual.
+  const blob = new Blob([JSON.stringify(state.servicos, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `confianca_backup_${todayISO()}.json`; a.click();
+  URL.revokeObjectURL(url);
+  showToast("Backup exportado");
+}
+
+function setFiltro(campo, valor) { state[campo] = valor; render(); }
+
+function exportarQuintoAndar() {
+  const [ano, mes] = state.mesRelatorio.split("-");
+  baixarArquivo(
+    `${API_BASE_URL}/api/relatorios/quinto-andar/exportar?mes=${Number(mes)}&ano=${ano}`,
+    `Relatorio_QuintoAndar_${state.mesRelatorio}.xlsx`
+  );
+}
+
+function filtrarServicosGeral() {
+  return state.servicos
+    .filter((s) => {
+      if (!state.todosPeriodosGeral && s.data.slice(0, 7) !== state.mesGeral) return false;
+      if (state.tipoGeral === "QuintoAndar" && !s.isQuintoAndar) return false;
+      if (state.tipoGeral === "Particular" && s.isQuintoAndar) return false;
+      if (state.statusGeral !== "Todos" && s.status !== state.statusGeral) return false;
+      return true;
+    })
+    .sort((a, b) => (a.data + a.horario).localeCompare(b.data + b.horario));
+}
+
+function exportarGeral() {
+  const params = new URLSearchParams();
+  if (!state.todosPeriodosGeral) {
+    const [ano, mes] = state.mesGeral.split("-");
+    params.set("ano", ano);
+    params.set("mes", Number(mes));
+  }
+  if (state.tipoGeral !== "Todos") params.set("tipo", state.tipoGeral);
+  if (state.statusGeral !== "Todos") params.set("status", statusParaApi(state.statusGeral));
+  const sufixo = state.todosPeriodosGeral ? "Todos" : state.mesGeral;
+  baixarArquivo(`${API_BASE_URL}/api/relatorios/geral/exportar?${params.toString()}`, `Relatorio_Geral_${sufixo}.xlsx`);
+}
+
+// ---------------------------------------------------------------------------
+// Componentes de template (strings)
+// ---------------------------------------------------------------------------
+function statusBadge(status) {
+  const st = STATUS_STYLE[status] || STATUS_STYLE[STATUS.AGENDADO];
+  return `<span class="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${st.badge}">${st.emoji} ${esc(status)}</span>`;
+}
+
+function statCard(label, value, sub, tone) {
+  const tones = { slate: "bg-slate-900 text-white", amber: "bg-amber-500 text-white", emerald: "bg-emerald-600 text-white", white: "bg-white text-slate-900 border border-slate-200" };
+  const mutedText = tone && tone !== "white" ? "text-white/70" : "text-slate-500";
+  return `<div class="rounded-2xl p-4 shadow-sm ${tones[tone || "white"]}">
+    <span class="text-xs font-medium uppercase tracking-wide ${mutedText}">${esc(label)}</span>
+    <div class="font-data mt-1 text-2xl font-semibold">${esc(value)}</div>
+    <div class="mt-0.5 text-xs ${mutedText}">${esc(sub)}</div>
+  </div>`;
+}
+
+function serviceCard(s) {
+  const pendente = s.status === STATUS.AGENDADO || s.status === STATUS.EM_ANDAMENTO;
+  return `<div class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <div class="flex flex-wrap items-start justify-between gap-3 p-4">
+      <div class="min-w-0 flex-1">
+        <div class="flex flex-wrap items-center gap-2">
+          ${statusBadge(s.status)}
+          ${s.isQuintoAndar ? `<span class="rounded-full bg-blue-100 px-2.5 py-1 text-xs font-medium text-blue-700">QuintoAndar · ${esc(s.numeroContrato || "s/ nº")}</span>` : ""}
+        </div>
+        <h3 class="mt-1.5 truncate text-base font-semibold text-slate-900">${esc(s.clienteNome)}</h3>
+        <div class="mt-1 flex items-start gap-1.5 text-sm text-slate-600"><span class="mt-0.5">📍</span><span>${esc(s.endereco)}</span></div>
+      </div>
+      <div class="hidden shrink-0 gap-1.5 sm:flex">
+        <button onclick="abrirWhatsApp('${s.id}')" title="Compartilhar via WhatsApp" class="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500 text-white hover:bg-emerald-600">💬</button>
+        ${pendente ? `<button onclick="baixarServico('${s.id}')" title="Baixar serviço" class="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-500 text-white hover:bg-amber-600">📋</button>` : ""}
+        <button onclick="editarServico('${s.id}')" title="Editar" class="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50">✏️</button>
+      </div>
+      <div class="flex shrink-0 gap-1.5 sm:hidden">
+        ${pendente ? `<button onclick="baixarServico('${s.id}')" title="Baixar serviço" class="flex h-11 w-11 items-center justify-center rounded-lg bg-amber-500 text-white active:bg-amber-600">📋</button>` : ""}
+        <button onclick="editarServico('${s.id}')" title="Editar" class="flex h-11 w-11 items-center justify-center rounded-lg border border-slate-300 text-slate-600 active:bg-slate-50">✏️</button>
+      </div>
+    </div>
+    <div class="border-t-2 border-dashed border-slate-200 px-4 py-3">
+      <div class="font-data grid grid-cols-2 gap-y-1.5 text-sm sm:grid-cols-4">
+        <span class="text-slate-600">📅 ${dataBR(s.data)}</span>
+        <span class="text-slate-600">🕐 ${esc(s.horario)}</span>
+        <span class="text-slate-600">👷 ${esc(s.qtdAjudantes)} ajudante(s)</span>
+        <span class="text-slate-600">🚚 ${esc(s.qtdViagens)} viagem(ns)</span>
+      </div>
+      <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+        <span class="text-slate-500">Cobrado: <span class="font-data font-medium text-slate-800">${brl(s.valorCobrado)}</span></span>
+        <span class="text-slate-500">Custo: <span class="font-data font-medium text-slate-800">${brl(custoTotal(s))}</span></span>
+        <span class="text-slate-500">Lucro: <span class="font-data font-semibold ${lucro(s) >= 0 ? "text-emerald-600" : "text-rose-600"}">${brl(lucro(s))}</span></span>
+      </div>
+      ${s.efetivos ? `<p class="mt-2 text-xs text-slate-500">Efetivos: ${esc(s.efetivos)}</p>` : ""}
+      ${(s.custosAdicionais || []).length > 0 ? `<p class="mt-1 text-xs text-amber-700">Custos extras: ${s.custosAdicionais.map((c) => `${esc(c.descricao || "item")} (${brl(c.valor)})`).join(", ")}</p>` : ""}
+      <button onclick="abrirWhatsApp('${s.id}')" class="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-white active:bg-emerald-600 sm:hidden">💬 Enviar para equipe (WhatsApp)</button>
+    </div>
+  </div>`;
+}
+
+// text-base (16px) no mobile evita o zoom automático do Safari ao focar o
+// campo; volta para text-sm em telas sm+. py-3 dá alvo de toque confortável
+// (~44px) no celular, compactando para py-2 no desktop.
+const inputCls = "w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-base text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200 sm:py-2 sm:text-sm";
+
+// ---------------------------------------------------------------------------
+// Custos adicionais (guincho, caminhão munck, etc.) — usados tanto no
+// cadastro (Novo Atendimento) quanto na Baixa de Serviço. Ficam em listas
+// transitórias (formCustos / baixaCustos) enquanto o formulário está aberto.
+// ---------------------------------------------------------------------------
+function getArrayCustos(containerId) { return containerId === "custos-form" ? formCustos : baixaCustos; }
+function setArrayCustos(containerId, arr) { if (containerId === "custos-form") formCustos = arr; else baixaCustos = arr; }
+
+function templateListaCustos(itens) {
+  const total = itens.reduce((a, c) => a + (Number(c.valor) || 0), 0);
+  return `
+    <div class="mt-2 space-y-2">
+      ${itens.length === 0 ? '<p class="text-xs text-slate-400">Nenhum custo adicional lançado.</p>' : ""}
+      ${itens.map((c) => `
+        <div class="flex flex-col gap-2 sm:flex-row">
+          <input class="${inputCls}" placeholder="Ex.: Guincho, Caminhão Munck..." value="${esc(c.descricao)}" oninput="atualizarCusto(this.closest('[data-custos-container]').dataset.custosContainer, '${c.id}', 'descricao', this.value)" />
+          <div class="flex gap-2">
+            <input type="number" min="0" step="0.01" class="${inputCls} sm:w-32" placeholder="R$" value="${esc(c.valor)}" oninput="atualizarCusto(this.closest('[data-custos-container]').dataset.custosContainer, '${c.id}', 'valor', this.value)" />
+            <button type="button" onclick="removerCusto(this.closest('[data-custos-container]').dataset.custosContainer, '${c.id}')" class="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-slate-300 text-slate-500 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 sm:h-9 sm:w-9">✕</button>
+          </div>
+        </div>`).join("")}
+    </div>
+    ${itens.length > 0 ? `<p class="mt-2 text-right text-xs font-medium text-slate-500">Total custos adicionais: <span class="font-data">${brl(total)}</span></p>` : ""}
+  `;
+}
+
+function blocoCustosAdicionais(itens, containerId) {
+  return `
+    <div class="col-span-full">
+      <div class="flex items-center justify-between">
+        <span class="text-sm font-medium text-slate-700">Custos adicionais (guincho, caminhão munck, etc.)</span>
+        <button type="button" onclick="adicionarCusto('${containerId}')" class="text-xs font-semibold text-blue-600 hover:text-blue-700">+ Adicionar custo</button>
+      </div>
+      <div id="${containerId}" data-custos-container="${containerId}">${templateListaCustos(itens)}</div>
+    </div>`;
+}
+
+function adicionarCusto(containerId) {
+  const arr = getArrayCustos(containerId);
+  arr.push({ id: uid(), descricao: "", valor: "" });
+  document.getElementById(containerId).innerHTML = templateListaCustos(arr);
+}
+function removerCusto(containerId, id) {
+  const arr = getArrayCustos(containerId).filter((c) => c.id !== id);
+  setArrayCustos(containerId, arr);
+  document.getElementById(containerId).innerHTML = templateListaCustos(arr);
+}
+function atualizarCusto(containerId, id, campo, valor) {
+  const item = getArrayCustos(containerId).find((c) => c.id === id);
+  if (item) item[campo] = valor;
+  // Não re-renderiza a lista aqui de propósito — evitaria perder o foco
+  // do campo enquanto a pessoa está digitando. O total só é recalculado
+  // ao adicionar/remover uma linha.
+}
+
+// ---------------------------------------------------------------------------
+// Views
+// ---------------------------------------------------------------------------
+function viewDashboard() {
+  const st = computeStats();
+  const lista = listaFiltrada();
+  return `
+  <div class="space-y-6">
+    <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      ${statCard("Hoje", st.doDia, "serviços agendados", "slate")}
+      ${statCard("Próximos 7 dias", st.proximos7, "a executar", "white")}
+      ${statCard("Pendentes", st.pendentes, "aguardando baixa", "amber")}
+      ${statCard("Lucro do mês", brl(st.lucroMes), "serviços concluídos", "emerald")}
+    </div>
+
+    <div class="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white p-3 sm:flex-row sm:flex-wrap sm:items-center">
+      <div class="relative w-full sm:min-w-[180px] sm:flex-1">
+        <input value="${esc(state.busca)}" oninput="setFiltro('busca', this.value)" placeholder="Buscar por cliente ou endereço..." class="${inputCls} pl-3" />
+      </div>
+      <div class="flex flex-col gap-2 sm:flex-row">
+        <select onchange="setFiltro('filtroPeriodo', this.value)" class="${inputCls} sm:w-auto">
+          ${["Todos", "Hoje", "Próximos 7 dias"].map((v) => `<option ${state.filtroPeriodo === v ? "selected" : ""}>${v}</option>`).join("")}
+        </select>
+        <select onchange="setFiltro('filtroStatus', this.value)" class="${inputCls} sm:w-auto">
+          ${["Todos", ...Object.values(STATUS)].map((v) => `<option ${state.filtroStatus === v ? "selected" : ""}>${v}</option>`).join("")}
+        </select>
+      </div>
+      <label class="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-3 text-sm text-slate-700 sm:py-2">
+        <input type="checkbox" class="h-4 w-4" ${state.somenteQuintoAndar ? "checked" : ""} onchange="setFiltro('somenteQuintoAndar', this.checked)" /> Só QuintoAndar
+      </label>
+      <div class="flex flex-col gap-2 sm:ml-auto sm:flex-row">
+        <button onclick="exportarBackup()" class="flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 px-3 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50 sm:py-2">⬇️ Exportar backup</button>
+      </div>
+    </div>
+
+    <div class="space-y-3">
+      ${lista.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">Nenhum atendimento encontrado com esses filtros.</div>` : lista.map(serviceCard).join("")}
+    </div>
+  </div>`;
+}
+
+function fieldRequiredMark(req) { return req ? '<span class="text-rose-500">*</span>' : ""; }
+
+function viewForm() {
+  const s = state.editingId ? state.servicos.find((x) => x.id === state.editingId) : null;
+  const v = (k, d = "") => (s ? s[k] : d);
+  formCustos = (s && s.custosAdicionais ? s.custosAdicionais : []).map((c) => ({ ...c }));
+  return `
+  <div class="mx-auto max-w-2xl">
+    <button onclick="setView('dashboard')" class="mb-4 flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-700">← Voltar ao painel</button>
+    <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <h2 class="text-lg font-semibold text-slate-900">${s ? "Editar atendimento" : "Novo atendimento"}</h2>
+      <p class="mt-0.5 text-sm text-slate-500">Preencha durante a ligação com o cliente — leva menos de 1 minuto.</p>
+
+      <div class="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div class="col-span-full">
+          <span class="mb-1 block text-sm font-medium text-slate-700">Tipo de serviço ${fieldRequiredMark(true)}</span>
+          <div class="flex gap-2">
+            <button type="button" id="btn-tipo-qa" onclick="selecionarTipoServico('quintoandar')" class="flex-1 rounded-lg border px-4 py-3 text-sm font-semibold transition sm:py-2.5 ${s && s.isQuintoAndar ? "border-blue-600 bg-blue-600 text-white" : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"}">QuintoAndar</button>
+            <button type="button" id="btn-tipo-particular" onclick="selecionarTipoServico('particular')" class="flex-1 rounded-lg border px-4 py-3 text-sm font-semibold transition sm:py-2.5 ${s && !s.isQuintoAndar ? "border-slate-900 bg-slate-900 text-white" : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"}">Particular</button>
+          </div>
+          <input type="hidden" id="f-tipo" value="${s ? (s.isQuintoAndar ? "quintoandar" : "particular") : ""}" />
+        </div>
+
+        <div id="wrap-f-contrato" class="col-span-full ${s && s.isQuintoAndar ? "" : "hidden"}">
+          <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Nº do contrato / referência (QuintoAndar) ${fieldRequiredMark(true)}</span>
+            <input id="f-contrato" class="${inputCls}" value="${esc(v("numeroContrato"))}" placeholder="Ex.: 278354" /></label>
+        </div>
+        <div id="wrap-f-cliente" class="col-span-full ${s && !s.isQuintoAndar ? "" : "hidden"}">
+          <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Nome do cliente ${fieldRequiredMark(true)}</span>
+            <input id="f-cliente" class="${inputCls}" value="${esc(v("clienteNome"))}" placeholder="Nome do cliente particular" /></label>
+        </div>
+
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Data ${fieldRequiredMark(true)}</span>
+          <input id="f-data" type="date" class="${inputCls}" value="${esc(v("data", todayISO()))}" /></label>
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Horário ${fieldRequiredMark(true)}</span>
+          <input id="f-horario" type="time" class="${inputCls}" value="${esc(v("horario", "09:00"))}" /></label>
+
+        <label class="col-span-full block"><span class="mb-1 block text-sm font-medium text-slate-700">Endereço do local ${fieldRequiredMark(true)}</span>
+          <textarea id="f-endereco" rows="2" class="${inputCls}" placeholder="Rua, número, bairro, cidade - UF">${esc(v("endereco"))}</textarea></label>
+
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Valor cobrado do cliente (R$)</span>
+          <input id="f-valor" type="number" min="0" step="0.01" class="${inputCls}" value="${esc(v("valorCobrado"))}" /></label>
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Custo operacional estimado (R$)</span>
+          <input id="f-custo" type="number" min="0" step="0.01" class="${inputCls}" value="${esc(v("custoOperacional"))}" /></label>
+
+        ${blocoCustosAdicionais(formCustos, "custos-form")}
+
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Qtd. de ajudantes</span>
+          <input id="f-ajudantes" type="number" min="0" class="${inputCls}" value="${esc(v("qtdAjudantes", 2))}" /></label>
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Qtd. de viagens de caminhão (estimado)</span>
+          <input id="f-viagens" type="number" min="0" class="${inputCls}" value="${esc(v("qtdViagens", 1))}" /></label>
+
+        ${s ? `<label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Status</span>
+          <select id="f-status" class="${inputCls}">${Object.values(STATUS).map((opt) => `<option ${s.status === opt ? "selected" : ""}>${opt}</option>`).join("")}</select></label>` : ""}
+
+        <label class="col-span-full block"><span class="mb-1 block text-sm font-medium text-slate-700">Observações</span>
+          <textarea id="f-obs" rows="2" class="${inputCls}" placeholder="Detalhes relevantes para a equipe de campo">${esc(v("obs"))}</textarea></label>
+      </div>
+
+      <div class="mt-6 flex flex-col gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:flex-wrap sm:items-center">
+        <button onclick="salvarServico(${s ? "true" : "false"})" class="w-full rounded-lg bg-slate-900 px-4 py-3 text-sm font-semibold text-white active:bg-slate-800 sm:w-auto sm:py-2.5">${s ? "Salvar alterações" : "Cadastrar atendimento"}</button>
+        <button onclick="enviarWhatsAppDoForm()" class="flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-4 py-3 text-sm font-semibold text-white active:bg-emerald-600 sm:w-auto sm:py-2.5">💬 Enviar para equipe (WhatsApp)</button>
+        <button onclick="copiarMensagemDoForm()" class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-300 px-4 py-3 text-sm font-medium text-slate-600 active:bg-slate-50 sm:w-auto sm:py-2.5">📋 Copiar mensagem</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function viewBaixa() {
+  const s = state.baixaId ? state.servicos.find((x) => x.id === state.baixaId) : null;
+  if (!s) {
+    const pend = pendentesBaixa();
+    return `
+    <div class="mx-auto max-w-2xl space-y-3">
+      <h2 class="text-lg font-semibold text-slate-900">Baixa de serviço</h2>
+      <p class="text-sm text-slate-500">Selecione um serviço pendente para registrar a finalização.</p>
+      ${pend.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">Nenhum serviço pendente de baixa no momento 🎉</div>` : ""}
+      <div class="space-y-2">
+        ${pend.map((s2) => `
+          <button onclick="selecionarBaixa('${s2.id}')" class="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 text-left active:border-amber-400 active:bg-amber-50 sm:hover:border-amber-400 sm:hover:bg-amber-50">
+            <div class="min-w-0"><p class="truncate font-semibold text-slate-900">${esc(s2.clienteNome)}</p><p class="text-sm text-slate-500">${dataBR(s2.data)} às ${esc(s2.horario)} · ${esc(s2.endereco)}</p></div>
+            <span class="shrink-0">${statusBadge(s2.status)}</span>
+          </button>`).join("")}
+      </div>
+    </div>`;
+  }
+  baixaCustos = (s.custosAdicionais || []).map((c) => ({ ...c }));
+  return `
+  <div class="mx-auto max-w-xl">
+    <button onclick="selecionarBaixa(null)" class="mb-4 flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-700">← Escolher outro serviço</button>
+    <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div class="mb-1 flex items-center gap-2">${statusBadge(s.status)}${s.isQuintoAndar ? `<span class="rounded-full bg-blue-100 px-2.5 py-1 text-xs font-medium text-blue-700">QuintoAndar</span>` : ""}</div>
+      <h2 class="text-lg font-semibold text-slate-900">${esc(s.clienteNome)}</h2>
+      <p class="text-sm text-slate-500">${dataBR(s.data)} às ${esc(s.horario)} · ${esc(s.endereco)}</p>
+
+      <div class="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <label class="col-span-full block"><span class="mb-1 block text-sm font-medium text-slate-700">Efetivos que realizaram o serviço</span>
+          <input id="b-efetivos" class="${inputCls}" value="${esc(s.efetivos)}" placeholder="Nomes separados por vírgula" /></label>
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Qtd. real de ajudantes</span>
+          <input id="b-ajudantes" type="number" min="0" class="${inputCls}" value="${esc(s.qtdAjudantes)}" /></label>
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Qtd. real de viagens de caminhão</span>
+          <input id="b-viagens" type="number" min="0" class="${inputCls}" value="${esc(s.qtdViagens)}" /></label>
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Custo operacional final (R$)</span>
+          <input id="b-custo" type="number" min="0" step="0.01" class="${inputCls}" value="${esc(s.custoOperacional)}" /></label>
+
+        ${blocoCustosAdicionais(baixaCustos, "custos-baixa")}
+
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Status final</span>
+          <select id="b-status" class="${inputCls}">
+            <option value="${STATUS.EM_ANDAMENTO}">Em Andamento</option>
+            <option value="${STATUS.CONCLUIDO}" selected>Concluído</option>
+            <option value="${STATUS.CANCELADO}">Cancelado</option>
+          </select></label>
+        <label class="col-span-full block"><span class="mb-1 block text-sm font-medium text-slate-700">Observações da execução</span>
+          <textarea id="b-obs" rows="2" class="${inputCls}" placeholder="Intercorrências, condições do imóvel, etc."></textarea></label>
+      </div>
+
+      <button onclick="salvarBaixa()" class="mt-6 w-full rounded-lg bg-amber-500 px-4 py-3 text-sm font-semibold text-slate-900 hover:bg-amber-400">Confirmar baixa do serviço</button>
+    </div>
+  </div>`;
+}
+
+function viewRelatorio() {
+  const filtrados = state.servicos.filter((s) => s.isQuintoAndar && s.status === STATUS.CONCLUIDO && s.data.slice(0, 7) === state.mesRelatorio)
+    .sort((a, b) => (a.data + a.horario).localeCompare(b.data + b.horario));
+  const custoTotalPeriodo = filtrados.reduce((acc, s) => acc + custoTotal(s), 0);
+  return `
+  <div class="space-y-5">
+    <div><h2 class="text-lg font-semibold text-slate-900">Relatório mensal — QuintoAndar</h2>
+      <p class="text-sm text-slate-500">Exporta os serviços concluídos do mês no modelo exato exigido pelo contrato.</p></div>
+
+    <div class="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center">
+      <label class="block w-full sm:w-auto"><span class="mb-1 block text-sm font-medium text-slate-700">Mês de referência</span>
+        <input type="month" class="${inputCls}" value="${esc(state.mesRelatorio)}" onchange="setFiltro('mesRelatorio', this.value)" /></label>
+      <div class="flex flex-col items-stretch gap-1 sm:ml-auto sm:items-end">
+        <button onclick="exportarQuintoAndar()" class="flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 text-sm font-semibold text-white active:bg-blue-700 sm:py-2.5">📊 Exportar Relatório Mensal — QuintoAndar</button>
+        <span class="text-center text-xs text-slate-400 sm:text-right">${filtrados.length} serviço(s) concluído(s) no período</span>
+      </div>
+    </div>
+
+    ${filtrados.length > 0 ? `<div class="flex items-center justify-between rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white sm:hidden">
+      <span>Total do período</span><span class="font-data">${brl(custoTotalPeriodo)}</span>
+    </div>` : ""}
+
+    <div class="space-y-3 sm:hidden">
+      ${filtrados.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">Nenhum serviço QuintoAndar concluído neste mês.</div>` :
+        filtrados.map((s) => `<div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div class="flex items-center justify-between gap-2">
+            <span class="font-data text-sm font-semibold text-slate-900">${dataBR(s.data)} · ${esc(s.horario)}</span>
+            <span class="font-data text-sm font-semibold text-blue-700">${brl(custoTotal(s))}</span>
+          </div>
+          <p class="mt-1.5 flex items-start gap-1.5 text-sm text-slate-600"><span class="mt-0.5">📍</span><span>${esc(s.endereco)}</span></p>
+          <p class="mt-1.5 text-xs text-slate-500">Contrato: <span class="font-data font-medium text-slate-700">${esc(s.numeroContrato || "—")}</span></p>
+          ${s.obs ? `<p class="mt-1.5 text-xs text-slate-500">${esc(s.obs)}</p>` : ""}
+        </div>`).join("")}
+    </div>
+
+    <div class="hidden overflow-x-auto rounded-2xl border border-slate-200 bg-white sm:block">
+      <table class="w-full min-w-[720px] text-left text-sm">
+        <thead><tr class="border-b border-slate-200 bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500">
+          <th class="px-4 py-3">Data</th><th class="px-4 py-3">Endereço</th><th class="px-4 py-3">Horário</th><th class="px-4 py-3">Contrato</th><th class="px-4 py-3">Custo</th><th class="px-4 py-3">Obs.</th>
+        </tr></thead>
+        <tbody class="font-data">
+          ${filtrados.length === 0 ? `<tr><td colspan="6" class="px-4 py-8 text-center font-sans text-slate-400">Nenhum serviço QuintoAndar concluído neste mês.</td></tr>` :
+            filtrados.map((s) => `<tr class="border-b border-slate-100 last:border-0">
+              <td class="px-4 py-2.5 whitespace-nowrap">${dataBR(s.data)}</td>
+              <td class="px-4 py-2.5">${esc(s.endereco)}</td>
+              <td class="px-4 py-2.5 whitespace-nowrap">${esc(s.horario)}</td>
+              <td class="px-4 py-2.5 whitespace-nowrap">${esc(s.numeroContrato || "—")}</td>
+              <td class="px-4 py-2.5 whitespace-nowrap">${brl(custoTotal(s))}</td>
+              <td class="px-4 py-2.5 text-slate-500">${esc(s.obs || "—")}</td>
+            </tr>`).join("")}
+        </tbody>
+        ${filtrados.length > 0 ? `<tfoot><tr class="border-t border-slate-200 bg-slate-50 font-data font-semibold text-slate-700">
+          <td class="px-4 py-2.5" colspan="4">Total do período</td><td class="px-4 py-2.5">${brl(custoTotalPeriodo)}</td><td></td>
+        </tr></tfoot>` : ""}
+      </table>
+    </div>
+  </div>`;
+}
+
+function viewRelatorioGeral() {
+  const filtrados = filtrarServicosGeral();
+  const faturado = filtrados.reduce((acc, s) => acc + (Number(s.valorCobrado) || 0), 0);
+  const custo = filtrados.reduce((acc, s) => acc + custoTotal(s), 0);
+  const lucroTotal = filtrados.reduce((acc, s) => acc + lucro(s), 0);
+  const qtdQA = filtrados.filter((s) => s.isQuintoAndar).length;
+  const qtdParticular = filtrados.length - qtdQA;
+
+  return `
+  <div class="space-y-5">
+    <div>
+      <h2 class="text-lg font-semibold text-slate-900">Relatório geral — todos os trabalhos</h2>
+      <p class="text-sm text-slate-500">QuintoAndar e Particular juntos, com custo total (incluindo custos adicionais) e lucro por serviço.</p>
+    </div>
+
+    <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      ${statCard("Serviços no período", filtrados.length, `${qtdQA} QuintoAndar · ${qtdParticular} Particular`, "slate")}
+      ${statCard("Faturamento", brl(faturado), "valor cobrado total", "white")}
+      ${statCard("Custo total", brl(custo), "operacional + adicionais", "amber")}
+      ${statCard("Lucro", brl(lucroTotal), "faturamento − custo total", "emerald")}
+    </div>
+
+    <div class="flex flex-col gap-2 rounded-2xl border border-slate-200 bg-white p-3 sm:flex-row sm:flex-wrap sm:items-end">
+      <label class="block w-full sm:w-auto"><span class="mb-1 block text-sm font-medium text-slate-700">Mês</span>
+        <input type="month" class="${inputCls}" value="${esc(state.mesGeral)}" onchange="setFiltro('mesGeral', this.value)" ${state.todosPeriodosGeral ? "disabled" : ""} /></label>
+      <label class="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-3 text-sm text-slate-700 sm:py-2">
+        <input type="checkbox" class="h-4 w-4" ${state.todosPeriodosGeral ? "checked" : ""} onchange="setFiltro('todosPeriodosGeral', this.checked)" /> Todos os períodos
+      </label>
+      <div class="flex flex-col gap-2 sm:flex-row">
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Tipo</span>
+          <select class="${inputCls} sm:w-auto" onchange="setFiltro('tipoGeral', this.value)">
+            ${["Todos", "QuintoAndar", "Particular"].map((v) => `<option ${state.tipoGeral === v ? "selected" : ""}>${v}</option>`).join("")}
+          </select></label>
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Status</span>
+          <select class="${inputCls} sm:w-auto" onchange="setFiltro('statusGeral', this.value)">
+            ${["Todos", ...Object.values(STATUS)].map((v) => `<option ${state.statusGeral === v ? "selected" : ""}>${v}</option>`).join("")}
+          </select></label>
+      </div>
+      <button onclick="exportarGeral()" class="flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 py-3 text-sm font-semibold text-white active:bg-slate-800 sm:ml-auto sm:py-2.5">📊 Exportar Relatório Geral</button>
+    </div>
+
+    <div class="space-y-3 sm:hidden">
+      ${filtrados.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">Nenhum serviço encontrado com esses filtros.</div>` :
+        filtrados.map((s) => `<div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div class="flex flex-wrap items-center gap-2">
+            ${statusBadge(s.status)}
+            <span class="text-xs font-medium text-slate-500">${s.isQuintoAndar ? "QuintoAndar" : "Particular"}</span>
+          </div>
+          <h4 class="mt-1.5 truncate text-sm font-semibold text-slate-900">${esc(s.clienteNome)}</h4>
+          <p class="mt-0.5 flex items-start gap-1.5 text-xs text-slate-500"><span class="mt-0.5">📅</span><span>${dataBR(s.data)} · ${esc(s.endereco)}</span></p>
+          <div class="font-data mt-2.5 grid grid-cols-3 gap-2 text-xs">
+            <div><p class="text-slate-400">Cobrado</p><p class="mt-0.5 font-semibold text-slate-800">${brl(s.valorCobrado)}</p></div>
+            <div><p class="text-slate-400">Custo total</p><p class="mt-0.5 font-semibold text-slate-800">${brl(custoTotal(s))}</p></div>
+            <div><p class="text-slate-400">Lucro</p><p class="mt-0.5 font-semibold ${lucro(s) >= 0 ? "text-emerald-600" : "text-rose-600"}">${brl(lucro(s))}</p></div>
+          </div>
+        </div>`).join("")}
+    </div>
+
+    <div class="hidden overflow-x-auto rounded-2xl border border-slate-200 bg-white sm:block">
+      <table class="w-full min-w-[920px] text-left text-sm">
+        <thead><tr class="border-b border-slate-200 bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500">
+          <th class="px-4 py-3">Data</th><th class="px-4 py-3">Tipo</th><th class="px-4 py-3">Cliente</th><th class="px-4 py-3">Endereço</th><th class="px-4 py-3">Status</th><th class="px-4 py-3">Cobrado</th><th class="px-4 py-3">Custo total</th><th class="px-4 py-3">Lucro</th>
+        </tr></thead>
+        <tbody class="font-data">
+          ${filtrados.length === 0 ? `<tr><td colspan="8" class="px-4 py-8 text-center font-sans text-slate-400">Nenhum serviço encontrado com esses filtros.</td></tr>` :
+            filtrados.map((s) => `<tr class="border-b border-slate-100 last:border-0">
+              <td class="px-4 py-2.5 whitespace-nowrap">${dataBR(s.data)}</td>
+              <td class="px-4 py-2.5 whitespace-nowrap">${s.isQuintoAndar ? "QuintoAndar" : "Particular"}</td>
+              <td class="px-4 py-2.5 whitespace-nowrap">${esc(s.clienteNome)}</td>
+              <td class="px-4 py-2.5">${esc(s.endereco)}</td>
+              <td class="px-4 py-2.5 whitespace-nowrap">${statusBadge(s.status)}</td>
+              <td class="px-4 py-2.5 whitespace-nowrap">${brl(s.valorCobrado)}</td>
+              <td class="px-4 py-2.5 whitespace-nowrap">${brl(custoTotal(s))}</td>
+              <td class="px-4 py-2.5 whitespace-nowrap font-semibold ${lucro(s) >= 0 ? "text-emerald-600" : "text-rose-600"}">${brl(lucro(s))}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Render principal
+// ---------------------------------------------------------------------------
+function render() {
+  const tabs = [
+    { id: "dashboard", label: "Painel", curto: "Painel", emoji: "📊" },
+    { id: "novo", label: "Novo Atendimento", curto: "Novo", emoji: "➕" },
+    { id: "baixa", label: "Baixa de Serviço", curto: "Baixa", emoji: "📋" },
+    { id: "relatorio", label: "Relatório QuintoAndar", curto: "QuintoAndar", emoji: "🗂️" },
+    { id: "relatorioGeral", label: "Relatório Geral", curto: "Geral", emoji: "📈" },
+  ];
+  // Nav horizontal — só em telas sm+ (no mobile a navegação vira barra inferior).
+  const nav = tabs.map((t) => `
+    <button onclick="setView('${t.id}')" class="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition ${state.view === t.id ? "bg-amber-500 text-slate-900" : "text-slate-300 hover:bg-slate-800 hover:text-white"}">
+      <span>${t.emoji}</span><span>${t.label}</span>
+    </button>`).join("");
+
+  // Barra de navegação inferior fixa — só no mobile, com alvo de toque
+  // grande e rótulos curtos para caber nas 5 abas lado a lado.
+  const navInferior = tabs.map((t) => `
+    <button onclick="setView('${t.id}')" class="flex flex-1 flex-col items-center justify-center gap-0.5 py-2.5 text-[11px] font-medium transition ${state.view === t.id ? "text-amber-400" : "text-slate-400 active:text-slate-200"}">
+      <span class="text-lg leading-none">${t.emoji}</span>
+      <span class="leading-none">${t.curto}</span>
+    </button>`).join("");
+
+  let body = "";
+  if (state.carregando && state.servicos.length === 0) {
+    body = viewCarregando();
+  } else if (state.erroCarregamento) {
+    body = viewErro();
+  } else if (state.view === "dashboard") body = viewDashboard();
+  else if (state.view === "novo") body = viewForm();
+  else if (state.view === "baixa") body = viewBaixa();
+  else if (state.view === "relatorio") body = viewRelatorio();
+  else if (state.view === "relatorioGeral") body = viewRelatorioGeral();
+
+  document.getElementById("app").innerHTML = `
+    <header class="sticky top-0 z-20 border-b border-slate-800 bg-slate-900">
+      <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3">
+        <div class="flex items-center gap-2.5">
+          <img src="logo_confiança.jpg" alt="Confiança Depósito e Armazenamento"
+               class="h-9 w-9 shrink-0 rounded-lg object-cover sm:h-10 sm:w-10"
+               onerror="this.remove()" />
+          <div><h1 class="text-sm font-semibold leading-tight text-white">Confiança Depósito e Armazenamento</h1>
+          <p class="text-xs leading-tight text-slate-400">Painel de Operações</p></div>
+        </div>
+        <nav class="hidden flex-wrap gap-1 sm:flex">${nav}</nav>
+      </div>
+    </header>
+    <main class="mx-auto max-w-6xl px-4 py-6 pb-24 sm:pb-6">${body}</main>
+    <nav class="fixed inset-x-0 bottom-0 z-30 flex border-t border-slate-800 bg-slate-900 pb-[env(safe-area-inset-bottom)] sm:hidden">${navInferior}</nav>
+  `;
+}
+
+function viewCarregando() {
+  return `<div class="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-300 bg-white p-16 text-center">
+    <span class="text-3xl">📦</span>
+    <p class="text-sm text-slate-500">Carregando atendimentos do servidor...</p>
+  </div>`;
+}
+
+function viewErro() {
+  return `<div class="mx-auto max-w-md rounded-2xl border border-rose-200 bg-rose-50 p-6 text-center">
+    <p class="text-sm font-medium text-rose-700">${esc(state.erroCarregamento)}</p>
+    <p class="mt-1 text-xs text-rose-500">API esperada em <span class="font-data">${esc(API_BASE_URL)}</span></p>
+    <button onclick="recarregar()" class="mt-4 rounded-lg bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-rose-700">Tentar novamente</button>
+  </div>`;
+}
+
+render();
+carregarServicos().then(render);
+</script>
+
+<div id="toast" class="fixed bottom-20 left-1/2 z-40 -translate-x-1/2 rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-lg opacity-0 pointer-events-none transition-opacity sm:bottom-5"></div>
+</body>
+</html>
