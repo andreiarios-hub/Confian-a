@@ -53,3 +53,8 @@ apontar para outro host, defina `window.CONFIANCA_API_BASE_URL` antes do script 
 Frontend: HTML + Tailwind (CDN) + JavaScript puro, sem build.
 Backend: FastAPI, SQLAlchemy, SQLite (dev) — troca simples para PostgreSQL/Supabase em produção
 via `DATABASE_URL` — e openpyxl para os relatórios.
+
+## Licença
+
+Software proprietário — todos os direitos reservados à Confiança Depósito e Armazenamento.
+Veja [`LICENSE`](LICENSE).
