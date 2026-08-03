@@ -6,5 +6,8 @@ python-dotenv==1.0.1
 openpyxl==3.1.5
 python-multipart==0.0.19
 
-# Descomente para produção com PostgreSQL/Supabase:
-# psycopg2-binary==2.9.10
+# Driver do PostgreSQL — necessário em produção (Render/Supabase). O SQLite
+# do ambiente de dev não precisa dele; ele só é usado quando DATABASE_URL
+# aponta para postgresql://... (veja backend/README.md, seção "Persistência
+# em produção").
+psycopg2-binary==2.9.10

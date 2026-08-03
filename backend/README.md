@@ -129,7 +129,34 @@ curl -OJ "http://localhost:8000/api/relatorios/geral/exportar?mes=8&ano=2026&tip
 - Recursos não encontrados retornam `404`.
 - CORS é controlado por `CORS_ORIGINS` no `.env` (lista separada por vírgula, ou `*` em dev).
 
+## ⚠️ Persistência em produção (Render)
+
+**SQLite (`sqlite:///./confianca.db`, o padrão quando `DATABASE_URL` não está definida) não persiste em
+serviços web do Render.** O filesystem de um Web Service do Render é efêmero: a cada deploy, restart, ou
+"cold start" depois do serviço hibernar por inatividade (plano free), o container volta para o estado da
+imagem original — qualquer arquivo `.db` escrito em runtime é perdido. Foi exatamente isso que causou o
+sumiço dos atendimentos: os dados eram gravados normalmente enquanto a instância ficava de pé, mas
+desapareciam no primeiro restart/deploy/hibernação seguinte. Discos persistentes ("Disks") do Render
+tampouco resolvem no plano free — exigem instância paga e só funcionam com 1 réplica.
+
+**Correção: usar um banco PostgreSQL externo** (o código já suporta isso — só trocar `DATABASE_URL`, sem
+mudar uma linha sequer de código). Passos:
+
+1. Provisione um Postgres — qualquer uma das opções funciona com o código atual:
+   - **Render Postgres** (New → PostgreSQL no dashboard do Render, tem plano free).
+   - **Supabase** (Database → Connection string, no dashboard do projeto).
+2. Copie a *connection string* (formato `postgresql://usuario:senha@host:porta/banco`) e ajuste o prefixo
+   para `postgresql+psycopg2://...` (o driver usado pelo SQLAlchemy neste projeto).
+3. No Web Service do backend, no Render: **Environment** → adicione/edite a variável `DATABASE_URL` com
+   essa connection string → salve (isso já dispara um redeploy).
+4. No primeiro boot com a nova `DATABASE_URL`, `Base.metadata.create_all()` (em `app/main.py`) cria a
+   tabela `ordens_servico` automaticamente no Postgres — não precisa rodar migração manual.
+5. Confirme que os dados sobrevivem a um restart manual do serviço no Render (Manual Deploy → redeploy).
+
+`psycopg2-binary` (driver do Postgres) já está no `requirements.txt` — nenhuma mudança de código é
+necessária além de configurar a variável de ambiente.
+
 ## Próximos passos sugeridos
 
-- Trocar `Base.metadata.create_all` por **Alembic** ao migrar para PostgreSQL/Supabase em produção.
+- Trocar `Base.metadata.create_all` por **Alembic** quando o schema começar a evoluir com frequência.
 - Adicionar autenticação (a API atualmente não tem controle de acesso).
