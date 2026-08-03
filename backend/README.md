@@ -99,6 +99,13 @@ curl -X PATCH http://localhost:8000/api/servicos/<id> \
   }'
 ```
 
+### `DELETE /api/servicos/{id}`
+Exclui definitivamente um atendimento (sem confirmação — o frontend ainda não tem botão para isso).
+
+```bash
+curl -X DELETE http://localhost:8000/api/servicos/<id>
+```
+
 ### `GET /api/servicos/{id}/whatsapp-link`
 Retorna a mensagem formatada (apenas data/horário/endereço) e a URL pronta para `wa.me`.
 

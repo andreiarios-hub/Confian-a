@@ -67,3 +67,11 @@ def whatsapp_link(servico_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Serviço não encontrado")
     mensagem, url = whatsapp.montar_link(servico)
     return schemas.WhatsAppLinkOut(mensagem=mensagem, url=url)
+
+
+@router.delete("/{servico_id}", status_code=http_status.HTTP_204_NO_CONTENT)
+def excluir_servico(servico_id: str, db: Session = Depends(get_db)):
+    servico = crud.obter_servico(db, servico_id)
+    if not servico:
+        raise HTTPException(status_code=404, detail="Serviço não encontrado")
+    crud.excluir_servico(db, servico)

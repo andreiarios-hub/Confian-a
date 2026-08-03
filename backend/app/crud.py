@@ -79,6 +79,11 @@ def obter_servico(db: Session, servico_id: str) -> Optional[models.OrdemServico]
     return db.query(models.OrdemServico).filter(models.OrdemServico.id == servico_id).first()
 
 
+def excluir_servico(db: Session, servico: models.OrdemServico) -> None:
+    db.delete(servico)
+    db.commit()
+
+
 def listar_servicos(
     db: Session,
     data_inicio: Optional[date_] = None,
