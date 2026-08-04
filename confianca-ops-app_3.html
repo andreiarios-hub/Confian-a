@@ -69,9 +69,18 @@ const todayISO = () => new Date().toISOString().slice(0, 10);
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 // ---------------------------------------------------------------------------
+// Autenticação (somente de UI, sem backend) — impede navegação até as abas
+// de atendimento antes do login. Não é proteção real contra alguém com
+// acesso ao código-fonte deste arquivo; serve para bloquear acesso casual.
+// ---------------------------------------------------------------------------
+const AUTH_STORAGE_KEY = "confianca_auth";
+const CREDENCIAIS_ACESSO = { usuario: "confiança", senha: "Dei@1705" };
+
+// ---------------------------------------------------------------------------
 // Estado da aplicação
 // ---------------------------------------------------------------------------
 const state = {
+  autenticado: localStorage.getItem(AUTH_STORAGE_KEY) === "1",
   servicos: [],
   carregando: true,
   erroCarregamento: null,
@@ -152,9 +161,6 @@ function mapServicoParaApiCreate(dados) {
     data: dados.data,
     horario: dados.horario,
     endereco: dados.endereco,
-    valor_cobrado: dados.valorCobrado,
-    custo_operacional: dados.custoOperacional,
-    custos_adicionais: mapCustosParaApi(dados.custosAdicionais),
     quantidade_ajudantes: dados.qtdAjudantes,
     viagens_caminhao: dados.qtdViagens,
     observacoes: dados.obs || "",
@@ -169,9 +175,6 @@ function mapServicoParaApiUpdate(dados) {
     data: dados.data,
     horario: dados.horario,
     endereco: dados.endereco,
-    valor_cobrado: dados.valorCobrado,
-    custo_operacional: dados.custoOperacional,
-    custos_adicionais: mapCustosParaApi(dados.custosAdicionais),
     quantidade_ajudantes: dados.qtdAjudantes,
     viagens_caminhao: dados.qtdViagens,
     efetivos_nomes: dados.efetivos,
@@ -223,10 +226,9 @@ async function baixarArquivo(url, nomeArquivo) {
   showToast("Relatório exportado");
 }
 
-// Custos adicionais são editados como listas transitórias (fora do state
-// principal) enquanto o formulário está aberto — só entram em state.servicos
-// quando o atendimento é salvo. Um conjunto para Novo/Editar, outro para Baixa.
-let formCustos = [];
+// Custos adicionais só existem na Baixa de Serviço — são editados como lista
+// transitória (fora do state principal) enquanto o formulário está aberto,
+// e só entram em state.servicos quando a baixa é confirmada.
 let baixaCustos = [];
 
 // ---------------------------------------------------------------------------
@@ -317,6 +319,30 @@ function pendentesBaixa() {
 // ---------------------------------------------------------------------------
 function setView(v) { state.view = v; state.editingId = null; state.baixaId = null; render(); }
 
+function tentarLogin() {
+  const usuario = (document.getElementById("login-usuario").value || "").trim().toLowerCase();
+  const senha = document.getElementById("login-senha").value || "";
+  const ok = usuario === CREDENCIAIS_ACESSO.usuario.toLowerCase() && senha === CREDENCIAIS_ACESSO.senha;
+  if (!ok) {
+    const erro = document.getElementById("login-erro");
+    if (erro) erro.classList.remove("hidden");
+    return;
+  }
+  localStorage.setItem(AUTH_STORAGE_KEY, "1");
+  state.autenticado = true;
+  state.view = "dashboard";
+  render();
+  carregarServicos().then(render);
+}
+
+function logout() {
+  localStorage.removeItem(AUTH_STORAGE_KEY);
+  state.autenticado = false;
+  state.servicos = [];
+  state.view = "dashboard";
+  render();
+}
+
 function abrirWhatsApp(id) {
   const s = state.servicos.find((x) => x.id === id);
   if (s) window.open(`https://wa.me/?text=${encodeURIComponent(buildWhatsAppMessage(s))}`, "_blank");
@@ -355,14 +381,9 @@ async function salvarServico(isEdit) {
     data: val("f-data"),
     horario: val("f-horario"),
     endereco: val("f-endereco").trim(),
-    valorCobrado: Number(val("f-valor")) || 0,
-    custoOperacional: Number(val("f-custo")) || 0,
     qtdAjudantes: Number(val("f-ajudantes")) || 0,
     qtdViagens: Number(val("f-viagens")) || 0,
     obs: val("f-obs").trim(),
-    custosAdicionais: formCustos
-      .filter((c) => (c.descricao || "").trim() || Number(c.valor) > 0)
-      .map((c) => ({ id: c.id, descricao: (c.descricao || "").trim(), valor: Number(c.valor) || 0 })),
   };
   if (isQuintoAndar && !dados.numeroContrato) { showToast("Informe o nº do contrato QuintoAndar"); return; }
   if (!isQuintoAndar && !dados.clienteNome) { showToast("Informe o nome do cliente"); return; }
@@ -413,6 +434,7 @@ async function salvarBaixa() {
     efetivos_nomes: val("b-efetivos").trim(),
     quantidade_ajudantes: Number(val("b-ajudantes")) || 0,
     viagens_caminhao: Number(val("b-viagens")) || 0,
+    valor_cobrado: Number(val("b-valor")) || 0,
     custo_operacional: Number(val("b-custo")) || 0,
     custos_adicionais: mapCustosParaApi(baixaCustos.filter((c) => (c.descricao || "").trim() || Number(c.valor) > 0)),
     observacoes: [s.obs, val("b-obs").trim()].filter(Boolean).join(" | "),
@@ -539,12 +561,12 @@ function serviceCard(s) {
 const inputCls = "w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-base text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200 sm:py-2 sm:text-sm";
 
 // ---------------------------------------------------------------------------
-// Custos adicionais (guincho, caminhão munck, etc.) — usados tanto no
-// cadastro (Novo Atendimento) quanto na Baixa de Serviço. Ficam em listas
-// transitórias (formCustos / baixaCustos) enquanto o formulário está aberto.
+// Custos adicionais (guincho, caminhão munck, etc.) — lançados apenas na
+// Baixa de Serviço. Ficam em lista transitória (baixaCustos) enquanto o
+// formulário está aberto.
 // ---------------------------------------------------------------------------
-function getArrayCustos(containerId) { return containerId === "custos-form" ? formCustos : baixaCustos; }
-function setArrayCustos(containerId, arr) { if (containerId === "custos-form") formCustos = arr; else baixaCustos = arr; }
+function getArrayCustos() { return baixaCustos; }
+function setArrayCustos(arr) { baixaCustos = arr; }
 
 function templateListaCustos(itens) {
   const total = itens.reduce((a, c) => a + (Number(c.valor) || 0), 0);
@@ -576,17 +598,17 @@ function blocoCustosAdicionais(itens, containerId) {
 }
 
 function adicionarCusto(containerId) {
-  const arr = getArrayCustos(containerId);
+  const arr = getArrayCustos();
   arr.push({ id: uid(), descricao: "", valor: "" });
   document.getElementById(containerId).innerHTML = templateListaCustos(arr);
 }
 function removerCusto(containerId, id) {
-  const arr = getArrayCustos(containerId).filter((c) => c.id !== id);
-  setArrayCustos(containerId, arr);
+  const arr = getArrayCustos().filter((c) => c.id !== id);
+  setArrayCustos(arr);
   document.getElementById(containerId).innerHTML = templateListaCustos(arr);
 }
 function atualizarCusto(containerId, id, campo, valor) {
-  const item = getArrayCustos(containerId).find((c) => c.id === id);
+  const item = getArrayCustos().find((c) => c.id === id);
   if (item) item[campo] = valor;
   // Não re-renderiza a lista aqui de propósito — evitaria perder o foco
   // do campo enquanto a pessoa está digitando. O total só é recalculado
@@ -639,7 +661,6 @@ function fieldRequiredMark(req) { return req ? '<span class="text-rose-500">*</s
 function viewForm() {
   const s = state.editingId ? state.servicos.find((x) => x.id === state.editingId) : null;
   const v = (k, d = "") => (s ? s[k] : d);
-  formCustos = (s && s.custosAdicionais ? s.custosAdicionais : []).map((c) => ({ ...c }));
   return `
   <div class="mx-auto max-w-2xl">
     <button onclick="setView('dashboard')" class="mb-4 flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-700">← Voltar ao painel</button>
@@ -673,13 +694,6 @@ function viewForm() {
 
         <label class="col-span-full block"><span class="mb-1 block text-sm font-medium text-slate-700">Endereço do local ${fieldRequiredMark(true)}</span>
           <textarea id="f-endereco" rows="2" class="${inputCls}" placeholder="Rua, número, bairro, cidade - UF">${esc(v("endereco"))}</textarea></label>
-
-        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Valor cobrado do cliente (R$)</span>
-          <input id="f-valor" type="number" min="0" step="0.01" class="${inputCls}" value="${esc(v("valorCobrado"))}" /></label>
-        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Custo operacional estimado (R$)</span>
-          <input id="f-custo" type="number" min="0" step="0.01" class="${inputCls}" value="${esc(v("custoOperacional"))}" /></label>
-
-        ${blocoCustosAdicionais(formCustos, "custos-form")}
 
         <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Qtd. de ajudantes</span>
           <input id="f-ajudantes" type="number" min="0" class="${inputCls}" value="${esc(v("qtdAjudantes", 2))}" /></label>
@@ -736,7 +750,9 @@ function viewBaixa() {
           <input id="b-ajudantes" type="number" min="0" class="${inputCls}" value="${esc(s.qtdAjudantes)}" /></label>
         <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Qtd. real de viagens de caminhão</span>
           <input id="b-viagens" type="number" min="0" class="${inputCls}" value="${esc(s.qtdViagens)}" /></label>
-        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Custo operacional final (R$)</span>
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Valor cobrado do cliente (R$)</span>
+          <input id="b-valor" type="number" min="0" step="0.01" class="${inputCls}" value="${esc(s.valorCobrado)}" /></label>
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Custo operacional (R$)</span>
           <input id="b-custo" type="number" min="0" step="0.01" class="${inputCls}" value="${esc(s.custoOperacional)}" /></label>
 
         ${blocoCustosAdicionais(baixaCustos, "custos-baixa")}
@@ -900,6 +916,10 @@ function viewRelatorioGeral() {
 // Render principal
 // ---------------------------------------------------------------------------
 function render() {
+  if (!state.autenticado) {
+    document.getElementById("app").innerHTML = viewLoginPage();
+    return;
+  }
   const tabs = [
     { id: "dashboard", label: "Painel", curto: "Painel", emoji: "📊" },
     { id: "novo", label: "Novo Atendimento", curto: "Novo", emoji: "➕" },
@@ -942,12 +962,37 @@ function render() {
           <div><h1 class="text-sm font-semibold leading-tight text-white">Confiança Depósito e Armazenamento</h1>
           <p class="text-xs leading-tight text-slate-400">Painel de Operações</p></div>
         </div>
-        <nav class="hidden flex-wrap gap-1 sm:flex">${nav}</nav>
+        <div class="flex items-center gap-2">
+          <nav class="hidden flex-wrap gap-1 sm:flex">${nav}</nav>
+          <button onclick="logout()" title="Sair" class="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white sm:text-sm">🚪 <span class="hidden sm:inline">Sair</span></button>
+        </div>
       </div>
     </header>
     <main class="mx-auto max-w-6xl px-4 py-6 pb-24 sm:pb-6">${body}</main>
     <nav class="fixed inset-x-0 bottom-0 z-30 flex border-t border-slate-800 bg-slate-900 pb-[env(safe-area-inset-bottom)] sm:hidden">${navInferior}</nav>
   `;
+}
+
+function viewLoginPage() {
+  return `
+  <div class="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+    <div class="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div class="flex flex-col items-center text-center">
+        <img src="logo_confiança.jpg" alt="Confiança Depósito e Armazenamento"
+             class="h-14 w-14 rounded-lg object-cover" onerror="this.remove()" />
+        <h1 class="mt-3 text-base font-semibold text-slate-900">Confiança Depósito e Armazenamento</h1>
+        <p class="text-xs text-slate-500">Painel de Operações</p>
+      </div>
+      <form class="mt-6 space-y-3" onsubmit="event.preventDefault(); tentarLogin();">
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Usuário</span>
+          <input id="login-usuario" autocomplete="username" class="${inputCls}" placeholder="Usuário" oninput="document.getElementById('login-erro').classList.add('hidden')" /></label>
+        <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Senha</span>
+          <input id="login-senha" type="password" autocomplete="current-password" class="${inputCls}" placeholder="Senha" oninput="document.getElementById('login-erro').classList.add('hidden')" /></label>
+        <p id="login-erro" class="hidden text-sm font-medium text-rose-600">Usuário ou senha inválidos.</p>
+        <button type="submit" class="w-full rounded-lg bg-slate-900 px-4 py-3 text-sm font-semibold text-white active:bg-slate-800">Entrar</button>
+      </form>
+    </div>
+  </div>`;
 }
 
 function viewCarregando() {
@@ -966,7 +1011,7 @@ function viewErro() {
 }
 
 render();
-carregarServicos().then(render);
+if (state.autenticado) carregarServicos().then(render);
 </script>
 
 <div id="toast" class="fixed bottom-20 left-1/2 z-40 -translate-x-1/2 rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-lg opacity-0 pointer-events-none transition-opacity sm:bottom-5"></div>
