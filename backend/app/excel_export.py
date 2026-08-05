@@ -56,7 +56,9 @@ MAPEAMENTO_QUINTO_ANDAR: List[Coluna] = [
     Coluna("Endereço", lambda s: s.endereco, "texto", 60),
     Coluna("Horário", lambda s: s.data_horario.strftime("%H:%M"), "hora", 10),
     Coluna("Contrato", lambda s: s.numero_contrato or "", "texto", 22),
-    Coluna("Custo", lambda s: _custo_total(s), "moeda", 18),
+    # A pedido: a coluna "CUSTO" do modelo QuintoAndar traz o valor cobrado do
+    # cliente (não o custo operacional) — nome do cabeçalho não muda.
+    Coluna("CUSTO", lambda s: Decimal(str(s.valor_cobrado or 0)), "moeda", 18),
     Coluna("Obs.", lambda s: _texto_obs_com_extras(s), "texto", 60),
 ]
 

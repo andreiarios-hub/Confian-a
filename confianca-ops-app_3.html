@@ -288,15 +288,21 @@ function computeStats() {
   const proximos7 = state.servicos.filter((s) => s.data >= hoje && s.data <= limite && s.status !== STATUS.CANCELADO).length;
   const pendentes = state.servicos.filter((s) => s.status === STATUS.AGENDADO || s.status === STATUS.EM_ANDAMENTO).length;
   const mesAtual = hoje.slice(0, 7);
-  const lucroMes = state.servicos.filter((s) => s.status === STATUS.CONCLUIDO && s.data.slice(0, 7) === mesAtual).reduce((a, s) => a + lucro(s), 0);
-  return { doDia, proximos7, pendentes, lucroMes };
+  const concluidosDoMes = state.servicos.filter((s) => s.status === STATUS.CONCLUIDO && s.data.slice(0, 7) === mesAtual);
+  const concluidosMes = concluidosDoMes.length;
+  const lucroMes = concluidosDoMes.reduce((a, s) => a + lucro(s), 0);
+  return { doDia, proximos7, pendentes, concluidosMes, lucroMes };
 }
 
+// O Painel mostra só os atendimentos PENDENTES (aguardando baixa/conclusão) —
+// concluídos e cancelados saem da lista para não poluir a tela, mas seguem
+// visíveis nos indicadores (computeStats) e na aba Relatório Geral.
 function listaFiltrada() {
   const hoje = todayISO();
   const em7 = new Date(); em7.setDate(em7.getDate() + 7);
   const limite = em7.toISOString().slice(0, 10);
   return state.servicos.filter((s) => {
+    if (s.status !== STATUS.AGENDADO && s.status !== STATUS.EM_ANDAMENTO) return false;
     if (state.filtroStatus !== "Todos" && s.status !== state.filtroStatus) return false;
     if (state.somenteQuintoAndar && !s.isQuintoAndar) return false;
     if (state.filtroPeriodo === "Hoje" && s.data !== hoje) return false;
@@ -312,6 +318,15 @@ function listaFiltrada() {
 function pendentesBaixa() {
   return state.servicos.filter((s) => s.status === STATUS.AGENDADO || s.status === STATUS.EM_ANDAMENTO)
     .sort((a, b) => (a.data + a.horario).localeCompare(b.data + b.horario));
+}
+
+// Serviços já baixados (Concluído/Cancelado) — listados na aba Baixa de
+// Serviço com um botão "Editar" para corrigir dados pós-baixa (valor
+// cobrado, custo operacional, custos adicionais etc.), do mais recente
+// para o mais antigo.
+function baixadosRecentes() {
+  return state.servicos.filter((s) => s.status === STATUS.CONCLUIDO || s.status === STATUS.CANCELADO)
+    .sort((a, b) => (b.data + b.horario).localeCompare(a.data + a.horario));
 }
 
 // ---------------------------------------------------------------------------
@@ -623,10 +638,11 @@ function viewDashboard() {
   const lista = listaFiltrada();
   return `
   <div class="space-y-6">
-    <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
       ${statCard("Hoje", st.doDia, "serviços agendados", "slate")}
       ${statCard("Próximos 7 dias", st.proximos7, "a executar", "white")}
       ${statCard("Pendentes", st.pendentes, "aguardando baixa", "amber")}
+      ${statCard("Concluídos no mês", st.concluidosMes, "atendimentos finalizados", "white")}
       ${statCard("Lucro do mês", brl(st.lucroMes), "serviços concluídos", "emerald")}
     </div>
 
@@ -639,7 +655,7 @@ function viewDashboard() {
           ${["Todos", "Hoje", "Próximos 7 dias"].map((v) => `<option ${state.filtroPeriodo === v ? "selected" : ""}>${v}</option>`).join("")}
         </select>
         <select onchange="setFiltro('filtroStatus', this.value)" class="${inputCls} sm:w-auto">
-          ${["Todos", ...Object.values(STATUS)].map((v) => `<option ${state.filtroStatus === v ? "selected" : ""}>${v}</option>`).join("")}
+          ${["Todos", STATUS.AGENDADO, STATUS.EM_ANDAMENTO].map((v) => `<option ${state.filtroStatus === v ? "selected" : ""}>${v}</option>`).join("")}
         </select>
       </div>
       <label class="flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-3 text-sm text-slate-700 sm:py-2">
@@ -651,7 +667,8 @@ function viewDashboard() {
     </div>
 
     <div class="space-y-3">
-      ${lista.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">Nenhum atendimento encontrado com esses filtros.</div>` : lista.map(serviceCard).join("")}
+      <p class="text-xs text-slate-400">Mostrando apenas atendimentos pendentes de baixa/conclusão. Concluídos e cancelados ficam no Relatório Geral.</p>
+      ${lista.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">Nenhum atendimento pendente encontrado com esses filtros.</div>` : lista.map(serviceCard).join("")}
     </div>
   </div>`;
 }
@@ -720,21 +737,43 @@ function viewBaixa() {
   const s = state.baixaId ? state.servicos.find((x) => x.id === state.baixaId) : null;
   if (!s) {
     const pend = pendentesBaixa();
+    const baixados = baixadosRecentes();
     return `
-    <div class="mx-auto max-w-2xl space-y-3">
-      <h2 class="text-lg font-semibold text-slate-900">Baixa de serviço</h2>
-      <p class="text-sm text-slate-500">Selecione um serviço pendente para registrar a finalização.</p>
-      ${pend.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">Nenhum serviço pendente de baixa no momento 🎉</div>` : ""}
-      <div class="space-y-2">
-        ${pend.map((s2) => `
-          <button onclick="selecionarBaixa('${s2.id}')" class="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 text-left active:border-amber-400 active:bg-amber-50 sm:hover:border-amber-400 sm:hover:bg-amber-50">
-            <div class="min-w-0"><p class="truncate font-semibold text-slate-900">${esc(s2.clienteNome)}</p><p class="text-sm text-slate-500">${dataBR(s2.data)} às ${esc(s2.horario)} · ${esc(s2.endereco)}</p></div>
-            <span class="shrink-0">${statusBadge(s2.status)}</span>
-          </button>`).join("")}
+    <div class="mx-auto max-w-2xl space-y-6">
+      <div class="space-y-3">
+        <h2 class="text-lg font-semibold text-slate-900">Baixa de serviço</h2>
+        <p class="text-sm text-slate-500">Selecione um serviço pendente para registrar a finalização.</p>
+        ${pend.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">Nenhum serviço pendente de baixa no momento 🎉</div>` : ""}
+        <div class="space-y-2">
+          ${pend.map((s2) => `
+            <button onclick="selecionarBaixa('${s2.id}')" class="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 text-left active:border-amber-400 active:bg-amber-50 sm:hover:border-amber-400 sm:hover:bg-amber-50">
+              <div class="min-w-0"><p class="truncate font-semibold text-slate-900">${esc(s2.clienteNome)}</p><p class="text-sm text-slate-500">${dataBR(s2.data)} às ${esc(s2.horario)} · ${esc(s2.endereco)}</p></div>
+              <span class="shrink-0">${statusBadge(s2.status)}</span>
+            </button>`).join("")}
+        </div>
+      </div>
+
+      <div class="space-y-3 border-t border-slate-200 pt-5">
+        <div>
+          <h3 class="text-sm font-semibold text-slate-900">Já baixados — corrigir dados</h3>
+          <p class="text-sm text-slate-500">Precisa ajustar valor cobrado, custo ou outro dado depois da baixa? Edite abaixo.</p>
+        </div>
+        ${baixados.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-500">Nenhum serviço baixado ainda.</div>` : ""}
+        <div class="space-y-2">
+          ${baixados.map((s2) => `
+            <div class="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4">
+              <div class="min-w-0"><p class="truncate font-semibold text-slate-900">${esc(s2.clienteNome)}</p><p class="text-sm text-slate-500">${dataBR(s2.data)} às ${esc(s2.horario)} · ${esc(s2.endereco)}</p></div>
+              <div class="flex shrink-0 items-center gap-2">
+                <span class="hidden sm:inline">${statusBadge(s2.status)}</span>
+                <button onclick="selecionarBaixa('${s2.id}')" title="Editar baixa" class="flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">✏️ Editar</button>
+              </div>
+            </div>`).join("")}
+        </div>
       </div>
     </div>`;
   }
   baixaCustos = (s.custosAdicionais || []).map((c) => ({ ...c }));
+  const jaFinalizado = s.status === STATUS.CONCLUIDO || s.status === STATUS.CANCELADO;
   return `
   <div class="mx-auto max-w-xl">
     <button onclick="selecionarBaixa(null)" class="mb-4 flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-700">← Escolher outro serviço</button>
@@ -742,6 +781,7 @@ function viewBaixa() {
       <div class="mb-1 flex items-center gap-2">${statusBadge(s.status)}${s.isQuintoAndar ? `<span class="rounded-full bg-blue-100 px-2.5 py-1 text-xs font-medium text-blue-700">QuintoAndar</span>` : ""}</div>
       <h2 class="text-lg font-semibold text-slate-900">${esc(s.clienteNome)}</h2>
       <p class="text-sm text-slate-500">${dataBR(s.data)} às ${esc(s.horario)} · ${esc(s.endereco)}</p>
+      ${jaFinalizado ? `<p class="mt-2 text-xs text-amber-700">Este serviço já foi baixado — as alterações abaixo corrigem os dados registrados.</p>` : ""}
 
       <div class="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
         <label class="col-span-full block"><span class="mb-1 block text-sm font-medium text-slate-700">Efetivos que realizaram o serviço</span>
@@ -759,15 +799,15 @@ function viewBaixa() {
 
         <label class="block"><span class="mb-1 block text-sm font-medium text-slate-700">Status final</span>
           <select id="b-status" class="${inputCls}">
-            <option value="${STATUS.EM_ANDAMENTO}">Em Andamento</option>
-            <option value="${STATUS.CONCLUIDO}" selected>Concluído</option>
-            <option value="${STATUS.CANCELADO}">Cancelado</option>
+            <option value="${STATUS.EM_ANDAMENTO}" ${jaFinalizado && s.status === STATUS.EM_ANDAMENTO ? "selected" : ""}>Em Andamento</option>
+            <option value="${STATUS.CONCLUIDO}" ${!jaFinalizado || s.status === STATUS.CONCLUIDO ? "selected" : ""}>Concluído</option>
+            <option value="${STATUS.CANCELADO}" ${jaFinalizado && s.status === STATUS.CANCELADO ? "selected" : ""}>Cancelado</option>
           </select></label>
         <label class="col-span-full block"><span class="mb-1 block text-sm font-medium text-slate-700">Observações da execução</span>
           <textarea id="b-obs" rows="2" class="${inputCls}" placeholder="Intercorrências, condições do imóvel, etc."></textarea></label>
       </div>
 
-      <button onclick="salvarBaixa()" class="mt-6 w-full rounded-lg bg-amber-500 px-4 py-3 text-sm font-semibold text-slate-900 hover:bg-amber-400">Confirmar baixa do serviço</button>
+      <button onclick="salvarBaixa()" class="mt-6 w-full rounded-lg bg-amber-500 px-4 py-3 text-sm font-semibold text-slate-900 hover:bg-amber-400">${jaFinalizado ? "Salvar alterações" : "Confirmar baixa do serviço"}</button>
     </div>
   </div>`;
 }
@@ -775,7 +815,9 @@ function viewBaixa() {
 function viewRelatorio() {
   const filtrados = state.servicos.filter((s) => s.isQuintoAndar && s.status === STATUS.CONCLUIDO && s.data.slice(0, 7) === state.mesRelatorio)
     .sort((a, b) => (a.data + a.horario).localeCompare(b.data + b.horario));
-  const custoTotalPeriodo = filtrados.reduce((acc, s) => acc + custoTotal(s), 0);
+  // Coluna "Custo" deste relatório reflete o valor cobrado do cliente (não o
+  // custo operacional) — mesma regra usada na planilha exportada.
+  const custoTotalPeriodo = filtrados.reduce((acc, s) => acc + (Number(s.valorCobrado) || 0), 0);
   return `
   <div class="space-y-5">
     <div><h2 class="text-lg font-semibold text-slate-900">Relatório mensal — QuintoAndar</h2>
@@ -799,7 +841,7 @@ function viewRelatorio() {
         filtrados.map((s) => `<div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <div class="flex items-center justify-between gap-2">
             <span class="font-data text-sm font-semibold text-slate-900">${dataBR(s.data)} · ${esc(s.horario)}</span>
-            <span class="font-data text-sm font-semibold text-blue-700">${brl(custoTotal(s))}</span>
+            <span class="font-data text-sm font-semibold text-blue-700">${brl(s.valorCobrado)}</span>
           </div>
           <p class="mt-1.5 flex items-start gap-1.5 text-sm text-slate-600"><span class="mt-0.5">📍</span><span>${esc(s.endereco)}</span></p>
           <p class="mt-1.5 text-xs text-slate-500">Contrato: <span class="font-data font-medium text-slate-700">${esc(s.numeroContrato || "—")}</span></p>
@@ -819,7 +861,7 @@ function viewRelatorio() {
               <td class="px-4 py-2.5">${esc(s.endereco)}</td>
               <td class="px-4 py-2.5 whitespace-nowrap">${esc(s.horario)}</td>
               <td class="px-4 py-2.5 whitespace-nowrap">${esc(s.numeroContrato || "—")}</td>
-              <td class="px-4 py-2.5 whitespace-nowrap">${brl(custoTotal(s))}</td>
+              <td class="px-4 py-2.5 whitespace-nowrap">${brl(s.valorCobrado)}</td>
               <td class="px-4 py-2.5 text-slate-500">${esc(s.obs || "—")}</td>
             </tr>`).join("")}
         </tbody>
