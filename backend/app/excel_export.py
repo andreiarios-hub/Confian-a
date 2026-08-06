@@ -70,6 +70,7 @@ MAPEAMENTO_GERAL: List[Coluna] = [
     Coluna("Contrato", lambda s: s.numero_contrato or "", "texto", 14),
     Coluna("Endereço", lambda s: s.endereco, "texto", 50),
     Coluna("Status", lambda s: s.status.value, "texto", 14),
+    Coluna("Efetivos", lambda s: s.efetivos_nomes or None, "texto", 28),
     Coluna("Valor Cobrado", lambda s: Decimal(str(s.valor_cobrado or 0)), "moeda", 16),
     Coluna("Custo Operacional", lambda s: Decimal(str(s.custo_operacional or 0)), "moeda", 18),
     Coluna(
@@ -80,7 +81,9 @@ MAPEAMENTO_GERAL: List[Coluna] = [
     ),
     Coluna("Custo Total", lambda s: _custo_total(s), "moeda", 16),
     Coluna("Lucro", lambda s: _lucro(s), "moeda", 16),
-    Coluna("Obs.", lambda s: _texto_obs_com_extras(s), "texto", 50),
+    # Última coluna: só o texto de "Observações da execução" — sem efetivos
+    # nem detalhamento de custos extras (esses já têm colunas próprias).
+    Coluna("Observações", lambda s: s.observacoes or None, "texto", 50),
 ]
 
 
