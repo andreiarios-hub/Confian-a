@@ -113,7 +113,7 @@ def _construir_planilha(
         celula = ws.cell(row=1, column=c, value=col.header)
         celula.font = fonte_cabecalho
         celula.fill = preenchimento_cabecalho
-        celula.alignment = Alignment(vertical="center")
+        celula.alignment = Alignment(horizontal="left", vertical="center")
         ws.column_dimensions[get_column_letter(c)].width = col.largura
     ws.row_dimensions[1].height = 22
 
@@ -123,10 +123,45 @@ def _construir_planilha(
             celula = _escrever_celula(ws, linha, c, col.valor(servico), col.tipo)
             celula.border = borda_fina
             celula.font = Font(name="Poppins", size=10)
-            celula.alignment = Alignment(vertical="top", wrap_text=col.tipo == "texto")
+            celula.alignment = Alignment(horizontal="left", vertical="center", wrap_text=col.tipo == "texto")
+
+    if servicos:
+        _escrever_linha_total(ws, mapeamento, linha_inicial_dados, len(servicos), borda_fina)
 
     ws.freeze_panes = f"A{linha_inicial_dados}"
     return wb
+
+
+def _escrever_linha_total(
+    ws: Worksheet,
+    mapeamento: List[Coluna],
+    linha_inicial_dados: int,
+    quantidade_linhas: int,
+    borda_fina: Border,
+) -> None:
+    """Linha final com =SOMA(...) nas colunas financeiras ('moeda'), em negrito
+    e com preenchimento de destaque — mesmas bordas/alinhamento das demais."""
+    primeira_linha = linha_inicial_dados
+    ultima_linha = linha_inicial_dados + quantidade_linhas - 1
+    linha_total = ultima_linha + 1
+
+    fonte_total = Font(name="Poppins", size=10, bold=True)
+    preenchimento_total = PatternFill(start_color=COR_BORDA, end_color=COR_BORDA, fill_type="solid")
+
+    for c, col in enumerate(mapeamento, start=1):
+        if c == 1:
+            valor, tipo = "TOTAL", "texto"
+        elif col.tipo == "moeda":
+            letra = get_column_letter(c)
+            valor, tipo = f"=SUM({letra}{primeira_linha}:{letra}{ultima_linha})", "moeda"
+        else:
+            valor, tipo = None, col.tipo
+
+        celula = _escrever_celula(ws, linha_total, c, valor, tipo)
+        celula.font = fonte_total
+        celula.fill = preenchimento_total
+        celula.border = borda_fina
+        celula.alignment = Alignment(horizontal="left", vertical="center")
 
 
 def gerar_relatorio_quinto_andar(servicos: Sequence[models.OrdemServico]) -> BytesIO:
