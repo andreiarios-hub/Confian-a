@@ -38,19 +38,6 @@ def _lucro(servico: models.OrdemServico) -> Decimal:
     return Decimal(str(servico.valor_cobrado or 0)) - _custo_total(servico)
 
 
-def _texto_obs_com_extras(servico: models.OrdemServico):
-    extras = [c for c in (servico.custos_adicionais or []) if c.get("descricao") or c.get("valor")]
-    partes = []
-    if servico.observacoes:
-        partes.append(servico.observacoes)
-    if extras:
-        detalhes = ", ".join(f"{c.get('descricao') or 'item'} R$ {float(c.get('valor', 0)):.2f}" for c in extras)
-        partes.append(f"Custos extras: {detalhes}")
-    # Observação apagada/vazia (e sem custos extras) deve resultar em célula
-    # em branco no Excel, não numa string vazia residual.
-    return " | ".join(partes) if partes else None
-
-
 # 🔧 Mesma ideia do MAPEAMENTO_COLUNAS_QUINTOANDAR do frontend: única lista
 # que precisa mudar se o QuintoAndar alterar nome/ordem/quantidade de colunas.
 MAPEAMENTO_QUINTO_ANDAR: List[Coluna] = [
@@ -61,7 +48,10 @@ MAPEAMENTO_QUINTO_ANDAR: List[Coluna] = [
     # A pedido: a coluna "CUSTO" do modelo QuintoAndar traz o valor cobrado do
     # cliente (não o custo operacional) — nome do cabeçalho não muda.
     Coluna("CUSTO", lambda s: Decimal(str(s.valor_cobrado or 0)), "moeda", 18),
-    Coluna("Obs.", lambda s: _texto_obs_com_extras(s), "texto", 60),
+    # Único e exclusivamente o texto puro salvo em observacoes — nada de
+    # custos adicionais/efetivos misturados aqui (isso já tem colunas
+    # próprias no Relatório Geral).
+    Coluna("Obs.", lambda s: s.observacoes or None, "texto", 60),
 ]
 
 MAPEAMENTO_GERAL: List[Coluna] = [
