@@ -38,7 +38,7 @@ def _lucro(servico: models.OrdemServico) -> Decimal:
     return Decimal(str(servico.valor_cobrado or 0)) - _custo_total(servico)
 
 
-def _texto_obs_com_extras(servico: models.OrdemServico) -> str:
+def _texto_obs_com_extras(servico: models.OrdemServico):
     extras = [c for c in (servico.custos_adicionais or []) if c.get("descricao") or c.get("valor")]
     partes = []
     if servico.observacoes:
@@ -46,7 +46,9 @@ def _texto_obs_com_extras(servico: models.OrdemServico) -> str:
     if extras:
         detalhes = ", ".join(f"{c.get('descricao') or 'item'} R$ {float(c.get('valor', 0)):.2f}" for c in extras)
         partes.append(f"Custos extras: {detalhes}")
-    return " | ".join(partes)
+    # Observação apagada/vazia (e sem custos extras) deve resultar em célula
+    # em branco no Excel, não numa string vazia residual.
+    return " | ".join(partes) if partes else None
 
 
 # 🔧 Mesma ideia do MAPEAMENTO_COLUNAS_QUINTOANDAR do frontend: única lista

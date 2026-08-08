@@ -204,7 +204,9 @@ async function recarregar() {
 async function baixarArquivo(url, nomeArquivo) {
   let resposta;
   try {
-    resposta = await fetch(url);
+    // cache: "no-store" garante que o Excel exportado sempre reflita a
+    // versão mais recente do banco (Neon), nunca uma resposta em cache.
+    resposta = await fetch(url, { cache: "no-store" });
   } catch {
     showToast("Não foi possível conectar ao servidor.");
     return;
@@ -452,7 +454,7 @@ async function salvarBaixa() {
     valor_cobrado: Number(val("b-valor")) || 0,
     custo_operacional: Number(val("b-custo")) || 0,
     custos_adicionais: mapCustosParaApi(baixaCustos.filter((c) => (c.descricao || "").trim() || Number(c.valor) > 0)),
-    observacoes: [s.obs, val("b-obs").trim()].filter(Boolean).join(" | "),
+    observacoes: val("b-obs").trim(),
   };
   try {
     await apiFetch(`/api/servicos/${s.id}`, { method: "PATCH", body: payload });
@@ -804,7 +806,7 @@ function viewBaixa() {
             <option value="${STATUS.CANCELADO}" ${jaFinalizado && s.status === STATUS.CANCELADO ? "selected" : ""}>Cancelado</option>
           </select></label>
         <label class="col-span-full block"><span class="mb-1 block text-sm font-medium text-slate-700">Observações da execução</span>
-          <textarea id="b-obs" rows="2" class="${inputCls}" placeholder="Intercorrências, condições do imóvel, etc."></textarea></label>
+          <textarea id="b-obs" rows="2" class="${inputCls}" placeholder="Intercorrências, condições do imóvel, etc.">${esc(s.obs)}</textarea></label>
       </div>
 
       <button onclick="salvarBaixa()" class="mt-6 w-full rounded-lg bg-amber-500 px-4 py-3 text-sm font-semibold text-slate-900 hover:bg-amber-400">${jaFinalizado ? "Salvar alterações" : "Confirmar baixa do serviço"}</button>

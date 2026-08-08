@@ -10,6 +10,10 @@ from ..database import get_db
 router = APIRouter(prefix="/api/relatorios", tags=["Relatórios"])
 
 MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+# Evita que o navegador (ou algum proxy) sirva uma resposta em cache do
+# export — cada exportação deve refletir a versão mais recente gravada no
+# banco (Neon em produção).
+HEADERS_SEM_CACHE = {"Cache-Control": "no-store, no-cache, must-revalidate"}
 
 
 @router.get("/quinto-andar/exportar")
@@ -28,7 +32,7 @@ def exportar_quinto_andar(
     return StreamingResponse(
         buffer,
         media_type=MIME_XLSX,
-        headers={"Content-Disposition": f'attachment; filename="{nome_arquivo}"'},
+        headers={"Content-Disposition": f'attachment; filename="{nome_arquivo}"', **HEADERS_SEM_CACHE},
     )
 
 
@@ -51,5 +55,5 @@ def exportar_geral(
     return StreamingResponse(
         buffer,
         media_type=MIME_XLSX,
-        headers={"Content-Disposition": f'attachment; filename="{nome_arquivo}"'},
+        headers={"Content-Disposition": f'attachment; filename="{nome_arquivo}"', **HEADERS_SEM_CACHE},
     )
