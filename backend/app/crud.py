@@ -166,6 +166,7 @@ def listar_quinto_andar_concluidos(db: Session, mes: int, ano: int) -> List[mode
 
 def criar_custo_geral(db: Session, dados: schemas.CustoGeralCreate) -> models.CustoGeral:
     custo = models.CustoGeral(
+        data=dados.data or date_.today(),
         descricao=(dados.descricao or "").strip(),
         valor=dados.valor,
         status=dados.status,

@@ -101,6 +101,9 @@ const state = {
   buscaGeral: "",
   dataInicioGeral: "",
   dataFimGeral: "",
+  // Custo de Efetivos e Adicionais — relatório por período
+  custosDataInicio: "",
+  custosDataFim: "",
 };
 
 // ---------------------------------------------------------------------------
@@ -203,6 +206,7 @@ function mapServicoParaApiUpdate(dados) {
 function mapCustoGeralDaApi(c) {
   return {
     id: c.id,
+    data: c.data || (c.created_at || "").slice(0, 10) || todayISO(),
     descricao: c.descricao || "",
     valor: Number(c.valor) || 0,
     status: c.status === "PAGO" ? "Pago" : "Pendente",
@@ -555,7 +559,7 @@ async function definirDataPagamentoEfetivos(servicoId, data) {
 // com nenhum serviço. CRUD próprio via /api/custos-gerais.
 async function adicionarCustoGeral() {
   try {
-    await apiFetch("/api/custos-gerais", { method: "POST", body: { descricao: "", valor: 0, status: "PENDENTE" } });
+    await apiFetch("/api/custos-gerais", { method: "POST", body: { data: todayISO(), descricao: "", valor: 0, status: "PENDENTE" } });
     await carregarServicos();
     render();
   } catch (e) {
@@ -565,7 +569,8 @@ async function adicionarCustoGeral() {
 
 async function atualizarCustoGeral(id, campo, valor) {
   const payload = {};
-  if (campo === "descricao") payload.descricao = valor;
+  if (campo === "data") payload.data = valor || todayISO();
+  else if (campo === "descricao") payload.descricao = valor;
   else if (campo === "valor") payload.valor = Number(valor) || 0;
   else if (campo === "dataPagamento") payload.data_pagamento = valor || null;
   try {
@@ -629,6 +634,31 @@ function exportarBackup() {
 }
 
 function setFiltro(campo, valor) { state[campo] = valor; render(); }
+
+// Presets de período para o relatório da aba de Custos — calcula De/Até e
+// aplica direto no state (ex.: "esta semana" = segunda a domingo atuais).
+function definirPeriodoCustos(tipo) {
+  const hoje = new Date();
+  const iso = (d) => d.toISOString().slice(0, 10);
+  if (tipo === "semana") {
+    const diaSemana = hoje.getDay(); // 0 = domingo
+    const inicio = new Date(hoje);
+    inicio.setDate(hoje.getDate() - ((diaSemana + 6) % 7)); // volta até segunda-feira
+    const fim = new Date(inicio);
+    fim.setDate(inicio.getDate() + 6);
+    state.custosDataInicio = iso(inicio);
+    state.custosDataFim = iso(fim);
+  } else if (tipo === "mes") {
+    const inicio = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+    const fim = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0);
+    state.custosDataInicio = iso(inicio);
+    state.custosDataFim = iso(fim);
+  } else {
+    state.custosDataInicio = "";
+    state.custosDataFim = "";
+  }
+  render();
+}
 
 function exportarQuintoAndar() {
   const [ano, mes] = state.mesRelatorio.split("-");
@@ -985,16 +1015,42 @@ function viewBaixa() {
 // (nomes, qtd. de ajudantes, custo operacional) e os custos adicionais
 // registrados na Baixa de Serviço, para controle de pagamento.
 function viewCustos() {
+  const periodoAtivo = !!(state.custosDataInicio || state.custosDataFim);
+  const dentroDoPeriodo = (data) => {
+    if (!periodoAtivo) return true;
+    if (state.custosDataInicio && data < state.custosDataInicio) return false;
+    if (state.custosDataFim && data > state.custosDataFim) return false;
+    return true;
+  };
+
   const comEfetivos = state.servicos
     .filter((s) => (s.efetivos && s.efetivos.trim()) || Number(s.qtdAjudantes) > 0)
+    .filter((s) => dentroDoPeriodo(s.data))
     .sort((a, b) => (b.data + b.horario).localeCompare(a.data + a.horario));
 
-  const custosGerais = [...state.custosGerais].sort((a, b) => (b.criadoEm || "").localeCompare(a.criadoEm || ""));
+  const custosGerais = state.custosGerais
+    .filter((c) => dentroDoPeriodo(c.data))
+    .sort((a, b) => (b.data || "").localeCompare(a.data || ""));
 
   const badgePagamento = (status) =>
     status === "Pago"
       ? `<span class="inline-flex items-center gap-1 rounded-full border border-emerald-300 bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800">✅ Pago</span>`
       : `<span class="inline-flex items-center gap-1 rounded-full border border-rose-300 bg-rose-100 px-2.5 py-1 text-xs font-medium text-rose-700">⏳ Pendente</span>`;
+
+  // Resumo do período selecionado (ou de tudo, se nenhum filtro aplicado):
+  // quanto está pago vs. pendente somando efetivos + custos adicionais.
+  const efetivosPendentes = comEfetivos.filter((s) => s.pagamentoEfetivosStatus === "Pendente");
+  const efetivosPagos = comEfetivos.filter((s) => s.pagamentoEfetivosStatus === "Pago");
+  const valorEfetivosPendente = efetivosPendentes.reduce((a, s) => a + (Number(s.custoOperacional) || 0), 0);
+  const valorEfetivosPago = efetivosPagos.reduce((a, s) => a + (Number(s.custoOperacional) || 0), 0);
+  const geraisPendentes = custosGerais.filter((c) => c.status === "Pendente");
+  const geraisPagos = custosGerais.filter((c) => c.status === "Pago");
+  const valorGeraisPendente = geraisPendentes.reduce((a, c) => a + (Number(c.valor) || 0), 0);
+  const valorGeraisPago = geraisPagos.reduce((a, c) => a + (Number(c.valor) || 0), 0);
+  const totalPendente = valorEfetivosPendente + valorGeraisPendente;
+  const totalPago = valorEfetivosPago + valorGeraisPago;
+  const qtdPendente = efetivosPendentes.length + geraisPendentes.length;
+  const qtdPago = efetivosPagos.length + geraisPagos.length;
 
   return `
   <div class="space-y-6">
@@ -1003,9 +1059,30 @@ function viewCustos() {
       <p class="text-sm text-slate-500">Acompanhamento de pagamentos dos efetivos/ajudantes e dos custos adicionais gerais da operação.</p>
     </div>
 
+    <div class="space-y-3 rounded-2xl border border-slate-200 bg-white p-3">
+      <p class="text-xs font-medium text-slate-500">Relatório por período — filtra as tabelas abaixo pela data do serviço (efetivos) e pela data do custo (adicionais).</p>
+      <div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end">
+        <label class="block w-full sm:w-auto"><span class="mb-1 block text-sm font-medium text-slate-700">De</span>
+          <input type="date" class="${inputCls}" value="${esc(state.custosDataInicio)}" onchange="setFiltro('custosDataInicio', this.value)" /></label>
+        <label class="block w-full sm:w-auto"><span class="mb-1 block text-sm font-medium text-slate-700">Até</span>
+          <input type="date" class="${inputCls}" value="${esc(state.custosDataFim)}" onchange="setFiltro('custosDataFim', this.value)" /></label>
+        <div class="flex flex-wrap gap-2">
+          <button onclick="definirPeriodoCustos('semana')" class="rounded-lg border border-slate-300 px-3 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50 sm:py-2">Esta semana</button>
+          <button onclick="definirPeriodoCustos('mes')" class="rounded-lg border border-slate-300 px-3 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50 sm:py-2">Este mês</button>
+          ${periodoAtivo ? `<button onclick="definirPeriodoCustos('tudo')" class="rounded-lg border border-slate-300 px-3 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50 sm:py-2">Limpar</button>` : ""}
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        ${statCard("A pagar no período", brl(totalPendente), `${qtdPendente} item(ns) pendente(s)`, "amber")}
+        ${statCard("Pago no período", brl(totalPago), `${qtdPago} item(ns) pago(s)`, "emerald")}
+        ${statCard("Efetivos", `${efetivosPendentes.length} pend. / ${efetivosPagos.length} pago(s)`, "no período filtrado", "white")}
+        ${statCard("Adicionais", `${geraisPendentes.length} pend. / ${geraisPagos.length} pago(s)`, "no período filtrado", "white")}
+      </div>
+    </div>
+
     <div class="space-y-3">
       <h3 class="text-sm font-semibold text-slate-900">Efetivos / Ajudantes</h3>
-      ${comEfetivos.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">Nenhum efetivo registrado ainda.</div>` : `
+      ${comEfetivos.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">Nenhum efetivo encontrado ${periodoAtivo ? "nesse período" : "ainda"}.</div>` : `
       <div class="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
         <table class="w-full min-w-[720px] text-left text-sm">
           <thead><tr class="border-b border-slate-200 bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -1038,23 +1115,24 @@ function viewCustos() {
         <button type="button" onclick="adicionarCustoGeral()" class="text-xs font-semibold text-blue-600 hover:text-blue-700">+ Adicionar custo</button>
       </div>
       <p class="text-xs text-slate-500">Lançados manualmente aqui — não vêm da Baixa de Serviço.</p>
-      ${custosGerais.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">Nenhum custo adicional lançado ainda.</div>` : `
+      ${custosGerais.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">Nenhum custo adicional encontrado ${periodoAtivo ? "nesse período" : "ainda"}.</div>` : `
       <div class="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-        <table class="w-full min-w-[720px] text-left text-sm">
+        <table class="w-full min-w-[820px] text-left text-sm">
           <thead><tr class="border-b border-slate-200 bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500">
-            <th class="px-4 py-3">Adicional</th><th class="px-4 py-3">Valor</th><th class="px-4 py-3">Data</th><th class="px-4 py-3">Status</th><th class="px-4 py-3"></th>
+            <th class="px-4 py-3">Data</th><th class="px-4 py-3">Adicional</th><th class="px-4 py-3">Valor</th><th class="px-4 py-3">Status</th><th class="px-4 py-3">Data pagamento</th><th class="px-4 py-3"></th>
           </tr></thead>
           <tbody class="font-data">
             ${custosGerais.map((c) => `
               <tr class="border-b border-slate-100 last:border-0">
+                <td class="px-4 py-2.5 whitespace-nowrap"><input type="date" class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs" value="${esc(c.data || "")}" onchange="atualizarCustoGeral('${c.id}', 'data', this.value)" /></td>
                 <td class="px-4 py-2.5"><input class="w-full min-w-[180px] rounded-lg border border-slate-300 px-2 py-1.5 text-sm font-sans" placeholder="Ex.: Papel bolha, contador..." value="${esc(c.descricao)}" onchange="atualizarCustoGeral('${c.id}', 'descricao', this.value)" /></td>
                 <td class="px-4 py-2.5"><input type="number" min="0" step="0.01" class="w-28 rounded-lg border border-slate-300 px-2 py-1.5 text-sm" value="${esc(c.valor)}" onchange="atualizarCustoGeral('${c.id}', 'valor', this.value)" /></td>
-                <td class="px-4 py-2.5 whitespace-nowrap"><input type="date" class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs" value="${esc(c.dataPagamento || "")}" onchange="atualizarCustoGeral('${c.id}', 'dataPagamento', this.value)" /></td>
                 <td class="px-4 py-2.5 whitespace-nowrap">
                   <button onclick="alternarStatusCustoGeral('${c.id}', '${c.status === "Pago" ? "Pendente" : "Pago"}')" title="Clique para alternar">
                     ${badgePagamento(c.status)}
                   </button>
                 </td>
+                <td class="px-4 py-2.5 whitespace-nowrap"><input type="date" class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs" value="${esc(c.dataPagamento || "")}" onchange="atualizarCustoGeral('${c.id}', 'dataPagamento', this.value)" /></td>
                 <td class="px-4 py-2.5 whitespace-nowrap">
                   <button onclick="removerCustoGeral('${c.id}')" title="Excluir" class="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-300 text-slate-500 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600">✕</button>
                 </td>

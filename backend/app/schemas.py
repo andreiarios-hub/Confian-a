@@ -115,6 +115,7 @@ class WhatsAppLinkOut(BaseModel):
 
 
 class CustoGeralBase(BaseModel):
+    data: date = Field(default_factory=date.today)
     descricao: str = ""
     valor: Decimal = Decimal("0")
     status: StatusPagamento = StatusPagamento.PENDENTE
@@ -126,6 +127,7 @@ class CustoGeralCreate(CustoGeralBase):
 
 
 class CustoGeralUpdate(BaseModel):
+    data: Optional[date] = None
     descricao: Optional[str] = None
     valor: Optional[Decimal] = None
     status: Optional[StatusPagamento] = None

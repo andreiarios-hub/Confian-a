@@ -64,6 +64,10 @@ class CustoGeral(Base):
     __tablename__ = "custos_gerais"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    # Data de referência do custo (quando ele ocorreu/venceu) — usada para
+    # filtrar o relatório por período (ex.: "quanto vence/venceu nesta
+    # semana"), diferente de data_pagamento (quando foi de fato pago).
+    data = Column(Date, nullable=False, default=lambda: datetime.utcnow().date(), index=True)
     descricao = Column(String(200), nullable=False, default="")
     valor = Column(Numeric(12, 2), nullable=False, default=0)
     status = Column(Enum(StatusPagamento), nullable=False, default=StatusPagamento.PENDENTE, index=True)
