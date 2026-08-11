@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .models import StatusServico
+from .models import StatusPagamento, StatusServico
 
 HORARIO_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
@@ -13,6 +13,8 @@ HORARIO_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 class CustoAdicional(BaseModel):
     descricao: str = ""
     valor: Decimal = Decimal("0")
+    status: StatusPagamento = StatusPagamento.PENDENTE
+    data_pagamento: Optional[date] = None
 
 
 class ServicoBase(BaseModel):
@@ -67,6 +69,8 @@ class ServicoUpdate(BaseModel):
     quantidade_ajudantes: Optional[int] = None
     viagens_caminhao: Optional[int] = None
     efetivos_nomes: Optional[str] = None
+    pagamento_efetivos_status: Optional[StatusPagamento] = None
+    pagamento_efetivos_data: Optional[date] = None
     status: Optional[StatusServico] = None
     observacoes: Optional[str] = None
 
@@ -96,6 +100,8 @@ class ServicoOut(BaseModel):
     quantidade_ajudantes: int
     viagens_caminhao: int
     efetivos_nomes: str
+    pagamento_efetivos_status: StatusPagamento
+    pagamento_efetivos_data: Optional[date] = None
     status: StatusServico
     observacoes: str
     data_finalizacao: Optional[date] = None

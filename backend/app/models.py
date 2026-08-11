@@ -14,6 +14,11 @@ class StatusServico(str, enum.Enum):
     CANCELADO = "CANCELADO"
 
 
+class StatusPagamento(str, enum.Enum):
+    PENDENTE = "PENDENTE"
+    PAGO = "PAGO"
+
+
 class OrdemServico(Base):
     __tablename__ = "ordens_servico"
 
@@ -34,6 +39,14 @@ class OrdemServico(Base):
     quantidade_ajudantes = Column(Integer, nullable=False, default=0)
     viagens_caminhao = Column(Integer, nullable=False, default=0)
     efetivos_nomes = Column(Text, nullable=False, default="")
+
+    # Pagamento dos efetivos/ajudantes que executaram o serviço (aba "Custo
+    # de Efetivos e Adicionais"). Custos adicionais têm status/data próprios
+    # dentro de cada item de custos_adicionais (JSON acima).
+    pagamento_efetivos_status = Column(
+        Enum(StatusPagamento), nullable=False, default=StatusPagamento.PENDENTE, index=True
+    )
+    pagamento_efetivos_data = Column(Date, nullable=True)
 
     status = Column(Enum(StatusServico), nullable=False, default=StatusServico.AGENDADO, index=True)
     observacoes = Column(Text, nullable=False, default="")

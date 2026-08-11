@@ -14,7 +14,17 @@ def _combinar_data_horario(data: date_, horario: str) -> datetime:
 
 
 def _serializar_custos(itens: List[schemas.CustoAdicional]) -> list:
-    return [{"descricao": (item.descricao or "").strip(), "valor": float(item.valor or 0)} for item in itens]
+    return [
+        {
+            "descricao": (item.descricao or "").strip(),
+            "valor": float(item.valor or 0),
+            "status": (item.status or models.StatusPagamento.PENDENTE).value
+            if hasattr(item.status, "value")
+            else (item.status or "PENDENTE"),
+            "data_pagamento": item.data_pagamento.isoformat() if item.data_pagamento else None,
+        }
+        for item in itens
+    ]
 
 
 def _custo_total(servico: models.OrdemServico) -> Decimal:
@@ -44,6 +54,8 @@ def to_out(servico: models.OrdemServico) -> schemas.ServicoOut:
         quantidade_ajudantes=servico.quantidade_ajudantes,
         viagens_caminhao=servico.viagens_caminhao,
         efetivos_nomes=servico.efetivos_nomes or "",
+        pagamento_efetivos_status=servico.pagamento_efetivos_status,
+        pagamento_efetivos_data=servico.pagamento_efetivos_data,
         status=servico.status,
         observacoes=servico.observacoes or "",
         data_finalizacao=servico.data_finalizacao,
