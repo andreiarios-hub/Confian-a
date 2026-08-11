@@ -112,3 +112,29 @@ class ServicoOut(BaseModel):
 class WhatsAppLinkOut(BaseModel):
     mensagem: str
     url: str
+
+
+class CustoGeralBase(BaseModel):
+    descricao: str = ""
+    valor: Decimal = Decimal("0")
+    status: StatusPagamento = StatusPagamento.PENDENTE
+    data_pagamento: Optional[date] = None
+
+
+class CustoGeralCreate(CustoGeralBase):
+    pass
+
+
+class CustoGeralUpdate(BaseModel):
+    descricao: Optional[str] = None
+    valor: Optional[Decimal] = None
+    status: Optional[StatusPagamento] = None
+    data_pagamento: Optional[date] = None
+
+
+class CustoGeralOut(CustoGeralBase):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    created_at: datetime
+    updated_at: datetime

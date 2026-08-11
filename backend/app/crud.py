@@ -164,6 +164,46 @@ def listar_quinto_andar_concluidos(db: Session, mes: int, ano: int) -> List[mode
     )
 
 
+def criar_custo_geral(db: Session, dados: schemas.CustoGeralCreate) -> models.CustoGeral:
+    custo = models.CustoGeral(
+        descricao=(dados.descricao or "").strip(),
+        valor=dados.valor,
+        status=dados.status,
+        data_pagamento=dados.data_pagamento,
+    )
+    db.add(custo)
+    db.commit()
+    db.refresh(custo)
+    return custo
+
+
+def obter_custo_geral(db: Session, custo_id: str) -> Optional[models.CustoGeral]:
+    return db.query(models.CustoGeral).filter(models.CustoGeral.id == custo_id).first()
+
+
+def listar_custos_gerais(db: Session) -> List[models.CustoGeral]:
+    return db.query(models.CustoGeral).order_by(models.CustoGeral.created_at.desc()).all()
+
+
+def atualizar_custo_geral(
+    db: Session, custo: models.CustoGeral, dados: schemas.CustoGeralUpdate
+) -> models.CustoGeral:
+    payload = dados.model_dump(exclude_unset=True)
+    if "descricao" in payload and payload["descricao"] is not None:
+        payload["descricao"] = payload["descricao"].strip()
+    for campo, valor in payload.items():
+        setattr(custo, campo, valor)
+    db.add(custo)
+    db.commit()
+    db.refresh(custo)
+    return custo
+
+
+def excluir_custo_geral(db: Session, custo: models.CustoGeral) -> None:
+    db.delete(custo)
+    db.commit()
+
+
 def listar_para_relatorio_geral(
     db: Session,
     mes: Optional[int],

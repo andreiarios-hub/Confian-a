@@ -82,6 +82,7 @@ const CREDENCIAIS_ACESSO = { usuario: "confiança", senha: "Dei@1705" };
 const state = {
   autenticado: localStorage.getItem(AUTH_STORAGE_KEY) === "1",
   servicos: [],
+  custosGerais: [],
   carregando: true,
   erroCarregamento: null,
   view: "dashboard",
@@ -199,12 +200,27 @@ function mapServicoParaApiUpdate(dados) {
   };
 }
 
+function mapCustoGeralDaApi(c) {
+  return {
+    id: c.id,
+    descricao: c.descricao || "",
+    valor: Number(c.valor) || 0,
+    status: c.status === "PAGO" ? "Pago" : "Pendente",
+    dataPagamento: c.data_pagamento || null,
+    criadoEm: (c.created_at || "").slice(0, 10),
+  };
+}
+
 async function carregarServicos() {
   state.carregando = true;
   state.erroCarregamento = null;
   try {
-    const dados = await apiFetch("/api/servicos?limit=1000");
-    state.servicos = dados.map(mapServicoDaApi);
+    const [servicos, custosGerais] = await Promise.all([
+      apiFetch("/api/servicos?limit=1000"),
+      apiFetch("/api/custos-gerais"),
+    ]);
+    state.servicos = servicos.map(mapServicoDaApi);
+    state.custosGerais = custosGerais.map(mapCustoGeralDaApi);
   } catch (e) {
     state.erroCarregamento = e.message || "Não foi possível carregar os atendimentos.";
   } finally {
@@ -315,7 +331,7 @@ function computeStats() {
   const comEfetivos = state.servicos.filter((s) => (s.efetivos && s.efetivos.trim()) || Number(s.qtdAjudantes) > 0);
   const efetivosPendentes = comEfetivos.filter((s) => s.pagamentoEfetivosStatus === "Pendente");
   const valorEfetivosPendente = efetivosPendentes.reduce((a, s) => a + (Number(s.custoOperacional) || 0), 0);
-  const adicionaisPendentes = state.servicos.flatMap((s) => (s.custosAdicionais || []).filter((c) => c.status === "Pendente"));
+  const adicionaisPendentes = state.custosGerais.filter((c) => c.status === "Pendente");
   const valorAdicionaisPendente = adicionaisPendentes.reduce((a, c) => a + (Number(c.valor) || 0), 0);
   const custosPendentesQtd = efetivosPendentes.length + adicionaisPendentes.length;
   const custosPendentesValor = valorEfetivosPendente + valorAdicionaisPendente;
@@ -534,14 +550,39 @@ async function definirDataPagamentoEfetivos(servicoId, data) {
   }
 }
 
-async function alternarPagamentoCusto(servicoId, custoId, novoStatus) {
-  const s = state.servicos.find((x) => x.id === servicoId);
-  if (!s) return;
-  const custos = (s.custosAdicionais || []).map((c) =>
-    c.id === custoId ? { ...c, status: novoStatus, dataPagamento: novoStatus === "Pago" ? todayISO() : null } : c
-  );
+// Custos adicionais gerais (papel bolha, fita, contador, taxas etc.) —
+// lançados manualmente na aba "Custo de Efetivos e Adicionais", sem vínculo
+// com nenhum serviço. CRUD próprio via /api/custos-gerais.
+async function adicionarCustoGeral() {
   try {
-    await apiFetch(`/api/servicos/${servicoId}`, { method: "PATCH", body: { custos_adicionais: mapCustosParaApi(custos) } });
+    await apiFetch("/api/custos-gerais", { method: "POST", body: { descricao: "", valor: 0, status: "PENDENTE" } });
+    await carregarServicos();
+    render();
+  } catch (e) {
+    showToast(e.message || "Erro ao adicionar custo");
+  }
+}
+
+async function atualizarCustoGeral(id, campo, valor) {
+  const payload = {};
+  if (campo === "descricao") payload.descricao = valor;
+  else if (campo === "valor") payload.valor = Number(valor) || 0;
+  else if (campo === "dataPagamento") payload.data_pagamento = valor || null;
+  try {
+    await apiFetch(`/api/custos-gerais/${id}`, { method: "PATCH", body: payload });
+    await carregarServicos();
+    render();
+  } catch (e) {
+    showToast(e.message || "Erro ao atualizar custo");
+  }
+}
+
+async function alternarStatusCustoGeral(id, novoStatus) {
+  try {
+    await apiFetch(`/api/custos-gerais/${id}`, {
+      method: "PATCH",
+      body: { status: novoStatus === "Pago" ? "PAGO" : "PENDENTE", data_pagamento: novoStatus === "Pago" ? todayISO() : null },
+    });
     await carregarServicos();
     render();
     showToast("Status de pagamento atualizado");
@@ -550,16 +591,14 @@ async function alternarPagamentoCusto(servicoId, custoId, novoStatus) {
   }
 }
 
-async function definirDataPagamentoCusto(servicoId, custoId, data) {
-  const s = state.servicos.find((x) => x.id === servicoId);
-  if (!s) return;
-  const custos = (s.custosAdicionais || []).map((c) => (c.id === custoId ? { ...c, dataPagamento: data || null } : c));
+async function removerCustoGeral(id) {
+  if (!confirm("Remover este custo adicional?")) return;
   try {
-    await apiFetch(`/api/servicos/${servicoId}`, { method: "PATCH", body: { custos_adicionais: mapCustosParaApi(custos) } });
+    await apiFetch(`/api/custos-gerais/${id}`, { method: "DELETE" });
     await carregarServicos();
     render();
   } catch (e) {
-    showToast(e.message || "Erro ao atualizar data de pagamento");
+    showToast(e.message || "Erro ao remover custo");
   }
 }
 
@@ -950,9 +989,7 @@ function viewCustos() {
     .filter((s) => (s.efetivos && s.efetivos.trim()) || Number(s.qtdAjudantes) > 0)
     .sort((a, b) => (b.data + b.horario).localeCompare(a.data + a.horario));
 
-  const linhasAdicionais = state.servicos
-    .flatMap((s) => (s.custosAdicionais || []).map((c) => ({ servico: s, custo: c })))
-    .sort((a, b) => (b.servico.data + b.servico.horario).localeCompare(a.servico.data + a.servico.horario));
+  const custosGerais = [...state.custosGerais].sort((a, b) => (b.criadoEm || "").localeCompare(a.criadoEm || ""));
 
   const badgePagamento = (status) =>
     status === "Pago"
@@ -963,16 +1000,16 @@ function viewCustos() {
   <div class="space-y-6">
     <div>
       <h2 class="text-lg font-semibold text-slate-900">Custo de Efetivos e Adicionais</h2>
-      <p class="text-sm text-slate-500">Acompanhamento de pagamentos dos efetivos/ajudantes e dos custos adicionais lançados na Baixa de Serviço.</p>
+      <p class="text-sm text-slate-500">Acompanhamento de pagamentos dos efetivos/ajudantes e dos custos adicionais gerais da operação.</p>
     </div>
 
     <div class="space-y-3">
       <h3 class="text-sm font-semibold text-slate-900">Efetivos / Ajudantes</h3>
       ${comEfetivos.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">Nenhum efetivo registrado ainda.</div>` : `
       <div class="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-        <table class="w-full min-w-[820px] text-left text-sm">
+        <table class="w-full min-w-[720px] text-left text-sm">
           <thead><tr class="border-b border-slate-200 bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500">
-            <th class="px-4 py-3">Data</th><th class="px-4 py-3">Cliente</th><th class="px-4 py-3">Efetivos</th><th class="px-4 py-3">Qtd. ajudantes</th><th class="px-4 py-3">Custo operacional</th><th class="px-4 py-3">Status</th><th class="px-4 py-3">Data pagamento</th>
+            <th class="px-4 py-3">Data</th><th class="px-4 py-3">Cliente</th><th class="px-4 py-3">Efetivos</th><th class="px-4 py-3">Custo operacional</th><th class="px-4 py-3">Status</th><th class="px-4 py-3">Data pagamento</th>
           </tr></thead>
           <tbody class="font-data">
             ${comEfetivos.map((s) => `
@@ -980,7 +1017,6 @@ function viewCustos() {
                 <td class="px-4 py-2.5 whitespace-nowrap">${dataBR(s.data)}</td>
                 <td class="px-4 py-2.5 whitespace-nowrap font-sans">${esc(s.clienteNome)}</td>
                 <td class="px-4 py-2.5">${esc(s.efetivos || "—")}</td>
-                <td class="px-4 py-2.5 whitespace-nowrap">${esc(s.qtdAjudantes)}</td>
                 <td class="px-4 py-2.5 whitespace-nowrap">${brl(s.custoOperacional)}</td>
                 <td class="px-4 py-2.5 whitespace-nowrap">
                   <button onclick="alternarPagamentoEfetivos('${s.id}', '${s.pagamentoEfetivosStatus === "Pago" ? "Pendente" : "Pago"}')" title="Clique para alternar">
@@ -997,27 +1033,30 @@ function viewCustos() {
     </div>
 
     <div class="space-y-3">
-      <h3 class="text-sm font-semibold text-slate-900">Custos adicionais (guincho, caminhão munck, etc.)</h3>
-      ${linhasAdicionais.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">Nenhum custo adicional lançado ainda.</div>` : `
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-semibold text-slate-900">Custos adicionais (papel bolha, fita, caixa de papelão, contador, taxas, etc.)</h3>
+        <button type="button" onclick="adicionarCustoGeral()" class="text-xs font-semibold text-blue-600 hover:text-blue-700">+ Adicionar custo</button>
+      </div>
+      <p class="text-xs text-slate-500">Lançados manualmente aqui — não vêm da Baixa de Serviço.</p>
+      ${custosGerais.length === 0 ? `<div class="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">Nenhum custo adicional lançado ainda.</div>` : `
       <div class="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-        <table class="w-full min-w-[820px] text-left text-sm">
+        <table class="w-full min-w-[720px] text-left text-sm">
           <thead><tr class="border-b border-slate-200 bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500">
-            <th class="px-4 py-3">Data</th><th class="px-4 py-3">Cliente</th><th class="px-4 py-3">Descrição</th><th class="px-4 py-3">Valor</th><th class="px-4 py-3">Status</th><th class="px-4 py-3">Data pagamento</th>
+            <th class="px-4 py-3">Adicional</th><th class="px-4 py-3">Valor</th><th class="px-4 py-3">Data</th><th class="px-4 py-3">Status</th><th class="px-4 py-3"></th>
           </tr></thead>
           <tbody class="font-data">
-            ${linhasAdicionais.map(({ servico: s, custo: c }) => `
+            ${custosGerais.map((c) => `
               <tr class="border-b border-slate-100 last:border-0">
-                <td class="px-4 py-2.5 whitespace-nowrap">${dataBR(s.data)}</td>
-                <td class="px-4 py-2.5 whitespace-nowrap font-sans">${esc(s.clienteNome)}</td>
-                <td class="px-4 py-2.5">${esc(c.descricao || "—")}</td>
-                <td class="px-4 py-2.5 whitespace-nowrap">${brl(c.valor)}</td>
+                <td class="px-4 py-2.5"><input class="w-full min-w-[180px] rounded-lg border border-slate-300 px-2 py-1.5 text-sm font-sans" placeholder="Ex.: Papel bolha, contador..." value="${esc(c.descricao)}" onchange="atualizarCustoGeral('${c.id}', 'descricao', this.value)" /></td>
+                <td class="px-4 py-2.5"><input type="number" min="0" step="0.01" class="w-28 rounded-lg border border-slate-300 px-2 py-1.5 text-sm" value="${esc(c.valor)}" onchange="atualizarCustoGeral('${c.id}', 'valor', this.value)" /></td>
+                <td class="px-4 py-2.5 whitespace-nowrap"><input type="date" class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs" value="${esc(c.dataPagamento || "")}" onchange="atualizarCustoGeral('${c.id}', 'dataPagamento', this.value)" /></td>
                 <td class="px-4 py-2.5 whitespace-nowrap">
-                  <button onclick="alternarPagamentoCusto('${s.id}', '${c.id}', '${c.status === "Pago" ? "Pendente" : "Pago"}')" title="Clique para alternar">
+                  <button onclick="alternarStatusCustoGeral('${c.id}', '${c.status === "Pago" ? "Pendente" : "Pago"}')" title="Clique para alternar">
                     ${badgePagamento(c.status)}
                   </button>
                 </td>
                 <td class="px-4 py-2.5 whitespace-nowrap">
-                  <input type="date" class="rounded-lg border border-slate-300 px-2 py-1.5 text-xs" value="${esc(c.dataPagamento || "")}" onchange="definirDataPagamentoCusto('${s.id}', '${c.id}', this.value)" />
+                  <button onclick="removerCustoGeral('${c.id}')" title="Excluir" class="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-300 text-slate-500 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600">✕</button>
                 </td>
               </tr>`).join("")}
           </tbody>
@@ -1199,8 +1238,11 @@ function render() {
     { id: "relatorioGeral", label: "Relatório Geral", curto: "Geral", emoji: "📈" },
   ];
   // Nav horizontal — só em telas sm+ (no mobile a navegação vira barra inferior).
+  // whitespace-nowrap + shrink-0 evitam que os botões quebrem linha (o que
+  // ficava feio com 6 abas); a barra inteira rola horizontalmente se não
+  // couber, em vez de quebrar o "Relatório Geral" para uma segunda linha.
   const nav = tabs.map((t) => `
-    <button onclick="setView('${t.id}')" class="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition ${state.view === t.id ? "bg-amber-500 text-slate-900" : "text-slate-300 hover:bg-slate-800 hover:text-white"}">
+    <button onclick="setView('${t.id}')" class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium transition ${state.view === t.id ? "bg-amber-500 text-slate-900" : "text-slate-300 hover:bg-slate-800 hover:text-white"}">
       <span>${t.emoji}</span><span>${t.label}</span>
     </button>`).join("");
 
@@ -1238,7 +1280,7 @@ function render() {
 
   document.getElementById("app").innerHTML = `
     <header class="sticky top-0 z-20 border-b border-slate-800 bg-slate-900">
-      <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3">
+      <div class="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3">
         <div class="flex items-center gap-2.5">
           <img src="logo_confiança.jpg" alt="Confiança Depósito e Armazenamento"
                class="h-9 w-9 shrink-0 rounded-lg object-cover sm:h-10 sm:w-10"
@@ -1246,11 +1288,9 @@ function render() {
           <div><h1 class="text-sm font-semibold leading-tight text-white">Confiança Depósito e Armazenamento</h1>
           <p class="text-xs leading-tight text-slate-400">Painel de Operações</p></div>
         </div>
-        <div class="flex items-center gap-2">
-          <nav class="hidden flex-wrap gap-1 sm:flex">${nav}</nav>
-          <button onclick="logout()" title="Sair" class="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white sm:text-sm">🚪 <span class="hidden sm:inline">Sair</span></button>
-        </div>
+        <button onclick="logout()" title="Sair" class="flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white sm:text-sm">🚪 <span class="hidden sm:inline">Sair</span></button>
       </div>
+      <nav class="hidden max-w-6xl gap-1 overflow-x-auto px-4 pb-2 sm:mx-auto sm:flex">${nav}</nav>
     </header>
     <main class="mx-auto max-w-6xl px-4 py-6 pb-24 sm:pb-6">${body}</main>
     <nav class="fixed inset-x-0 bottom-0 z-30 flex border-t border-slate-800 bg-slate-900 pb-[env(safe-area-inset-bottom)] sm:hidden">${navInferior}</nav>

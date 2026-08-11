@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from .database import Base, engine
-from .routers import relatorios, servicos
+from .routers import custos_gerais, relatorios, servicos
 
 load_dotenv()
 
@@ -58,3 +58,4 @@ def raiz():
 
 app.include_router(servicos.router)
 app.include_router(relatorios.router)
+app.include_router(custos_gerais.router)

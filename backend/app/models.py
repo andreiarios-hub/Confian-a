@@ -54,3 +54,20 @@ class OrdemServico(Base):
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CustoGeral(Base):
+    """Custos adicionais gerais da operação (papel bolha, fita, caixa de
+    papelão, contador, taxas etc.) — não ligados a um serviço específico,
+    lançados manualmente na aba "Custo de Efetivos e Adicionais"."""
+
+    __tablename__ = "custos_gerais"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    descricao = Column(String(200), nullable=False, default="")
+    valor = Column(Numeric(12, 2), nullable=False, default=0)
+    status = Column(Enum(StatusPagamento), nullable=False, default=StatusPagamento.PENDENTE, index=True)
+    data_pagamento = Column(Date, nullable=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
